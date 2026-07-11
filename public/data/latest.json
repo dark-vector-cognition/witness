@@ -1,0 +1,233 @@
+{
+  "schemaVersion": "0.1.0",
+  "generatedAt": "2026-07-11T16:33:26.629Z",
+  "machine": "firestarter",
+  "window": "live local capture",
+  "counts": {
+    "agents": 2,
+    "models": 0,
+    "mcpServers": 2
+  },
+  "inventory": [
+    {
+      "id": "agent-board-steward",
+      "name": "Board Steward",
+      "kind": "agent",
+      "vendor": "DVC",
+      "health": "healthy"
+    },
+    {
+      "id": "agent-runtime-witness",
+      "name": "Runtime Witness",
+      "kind": "agent",
+      "vendor": "DVC",
+      "health": "healthy"
+    },
+    {
+      "id": "mcp-ticketboard",
+      "name": "TicketBoard MCP",
+      "kind": "MCP server",
+      "vendor": "local",
+      "health": "healthy"
+    },
+    {
+      "id": "mcp-prometheus",
+      "name": "Prometheus bridge",
+      "kind": "MCP server",
+      "vendor": "local",
+      "health": "healthy"
+    },
+    {
+      "id": "connector-vault",
+      "name": "vault-rag",
+      "kind": "connector",
+      "vendor": "local",
+      "health": "healthy"
+    }
+  ],
+  "sources": [
+    {
+      "id": "ticketboard",
+      "name": "TicketBoard",
+      "boundary": "local files · read only",
+      "health": "healthy",
+      "evidence": "157 Markdown records indexed; product tickets LOCAL-184, LOCAL-185, LOCAL-186, LOCAL-187, LOCAL-188, LOCAL-189, LOCAL-190.",
+      "freshness": "captured now"
+    },
+    {
+      "id": "vault-rag",
+      "name": "vault-rag",
+      "boundary": "localhost health · read only",
+      "health": "healthy",
+      "evidence": "Health endpoint returned an allow-listed ok response.",
+      "freshness": "captured now"
+    },
+    {
+      "id": "stormbreaker",
+      "name": "Stormbreaker / ComfyUI",
+      "boundary": "Tailscale HTTP · read only",
+      "health": "healthy",
+      "evidence": "Runtime 0.24.0; 1 compute device(s).",
+      "freshness": "captured now"
+    }
+  ],
+  "events": [
+    {
+      "id": "830a2e88-7c51-41c4-bb0c-9d51c5ff0618",
+      "at": "2026-07-11T16:33:26.629Z",
+      "source": "recorder",
+      "title": "Secret boundary enforced",
+      "summary": "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.",
+      "outcome": "success",
+      "evidenceId": "POL-REDACT-01"
+    },
+    {
+      "id": "7bfbf7c9-55d8-46e3-afef-11e8ae4edd82",
+      "at": "2026-07-11T16:33:26.629Z",
+      "source": "prometheus-stormbreaker",
+      "title": "Stormbreaker runtime observed",
+      "summary": "ComfyUI 0.24.0 responded with 1 compute device record(s).",
+      "outcome": "success",
+      "evidenceId": "SB-200"
+    },
+    {
+      "id": "5ac6d730-9a14-4615-aa08-9ce37dfb51eb",
+      "at": "2026-07-11T16:33:26.629Z",
+      "source": "vault-rag",
+      "title": "Knowledge runtime responded",
+      "summary": "The read-only health endpoint returned status ok.",
+      "outcome": "success",
+      "evidenceId": "VR-200"
+    },
+    {
+      "id": "29a3eb6b-9542-45c2-bdda-e67a58b1bfdc",
+      "at": "2026-07-11T16:33:26.629Z",
+      "source": "ticketboard",
+      "title": "Ticket inventory captured",
+      "summary": "157 local ticket records observed; 7 govern this product.",
+      "outcome": "success",
+      "evidenceId": "TB-157"
+    },
+    {
+      "id": "140a48e0-7c62-4a1d-b076-41b8f9c8981b",
+      "at": "2026-07-11T16:32:18.718Z",
+      "source": "recorder",
+      "title": "Secret boundary enforced",
+      "summary": "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.",
+      "outcome": "success",
+      "evidenceId": "POL-REDACT-01"
+    },
+    {
+      "id": "0c7a70da-b701-4665-b830-0f3de0aa2651",
+      "at": "2026-07-11T16:32:18.718Z",
+      "source": "prometheus-stormbreaker",
+      "title": "Stormbreaker runtime observed",
+      "summary": "ComfyUI 0.24.0 responded with 1 compute device record(s).",
+      "outcome": "success",
+      "evidenceId": "SB-200"
+    },
+    {
+      "id": "136676df-8cee-4856-a29c-9361c0d5af51",
+      "at": "2026-07-11T16:32:18.718Z",
+      "source": "vault-rag",
+      "title": "Knowledge runtime responded",
+      "summary": "The read-only health endpoint returned status ok.",
+      "outcome": "success",
+      "evidenceId": "VR-200"
+    },
+    {
+      "id": "c13d6375-86bd-439b-a530-080d17d28026",
+      "at": "2026-07-11T16:32:18.718Z",
+      "source": "ticketboard",
+      "title": "Ticket inventory captured",
+      "summary": "157 local ticket records observed; 7 govern this product.",
+      "outcome": "success",
+      "evidenceId": "TB-157"
+    },
+    {
+      "id": "0b7b88a6-13d6-4065-9f72-42894b1e6068",
+      "at": "2026-07-11T16:30:20.887Z",
+      "source": "recorder",
+      "title": "Secret boundary enforced",
+      "summary": "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.",
+      "outcome": "success",
+      "evidenceId": "POL-REDACT-01"
+    },
+    {
+      "id": "462521f1-c4a7-4dab-86f7-6e9fc4494e9a",
+      "at": "2026-07-11T16:30:20.887Z",
+      "source": "prometheus-stormbreaker",
+      "title": "Stormbreaker runtime observed",
+      "summary": "ComfyUI 0.24.0 responded with 1 compute device record(s).",
+      "outcome": "success",
+      "evidenceId": "SB-200"
+    }
+  ],
+  "permissions": [
+    {
+      "id": "p1",
+      "identity": "Board Steward",
+      "kind": "operating agent",
+      "access": "Ticket metadata and comments",
+      "policy": "allowed",
+      "policyLabel": "Read allowed",
+      "approver": "Registry spec · LOCAL-146"
+    },
+    {
+      "id": "p2",
+      "identity": "Runtime Witness",
+      "kind": "operating agent",
+      "access": "Processes, ports, health endpoints",
+      "policy": "allowed",
+      "policyLabel": "Read allowed",
+      "approver": "Registry spec · LOCAL-146"
+    },
+    {
+      "id": "p3",
+      "identity": "Recorder operator",
+      "kind": "human operator",
+      "access": "Replay / suspend / terminate",
+      "policy": "gated",
+      "policyLabel": "Approval gated",
+      "approver": "No active grant"
+    },
+    {
+      "id": "p4",
+      "identity": "Source adapters",
+      "kind": "connector boundary",
+      "access": "Credentials and secret values",
+      "policy": "denied",
+      "policyLabel": "Never collect",
+      "approver": "Hard policy · POL-REDACT-01"
+    }
+  ],
+  "controlContracts": [
+    {
+      "id": "replay",
+      "label": "Replay",
+      "description": "Reconstruct inputs and ordered evidence without re-running side effects.",
+      "mode": "Simulation only",
+      "failure": "Fails closed when inputs, adapter version, or evidence hashes are incomplete."
+    },
+    {
+      "id": "suspend",
+      "label": "Suspend",
+      "description": "Request a cooperative pause at the next declared safe checkpoint.",
+      "mode": "Simulation only",
+      "failure": "Times out to unknown state; never claims suspension without adapter acknowledgement."
+    },
+    {
+      "id": "terminate",
+      "label": "Terminate",
+      "description": "Request bounded shutdown through an explicitly authorized adapter.",
+      "mode": "Simulation only",
+      "failure": "Escalates to an operator when graceful shutdown is unconfirmed; no blind process kill."
+    }
+  ],
+  "chain": {
+    "eventCount": 16,
+    "lastHash": "ee5ffb986697bce1cbe0357559be24b977b6f7aab3e9022156375ca5c6d890cc",
+    "shortHash": "ee5ffb986697",
+    "verified": true
+  }
+}

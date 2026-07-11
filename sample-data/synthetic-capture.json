@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "0.1.0",
+  "provenance": "Synthetic. No customer or local machine data.",
+  "inventory": [
+    { "id": "agent-sample-01", "name": "Invoice Triage", "kind": "agent", "vendor": "example", "health": "healthy" },
+    { "id": "mcp-sample-01", "name": "Finance Read API", "kind": "MCP server", "vendor": "example", "health": "attention" }
+  ],
+  "events": [
+    {
+      "id": "evt-sample-01",
+      "source": "synthetic-adapter",
+      "title": "Read-only invoice classification completed",
+      "summary": "12 synthetic records classified; two require human review.",
+      "outcome": "attention",
+      "evidenceId": "SAMPLE-001"
+    }
+  ]
+}
