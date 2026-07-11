@@ -16,7 +16,8 @@ test("renders the operator evidence surface", async () => {
   assert.match(html, /Agent Flight Recorder/);
   assert.match(html, /Mission timeline/);
   assert.match(html, /Permission &amp; approval matrix/);
-  assert.match(html, /Replay, suspend, terminate/);
+  assert.match(html, /Source coverage manifest/);
+  assert.match(html, /Replay, suspend, resume, terminate/);
   assert.match(html, /TicketBoard/);
   assert.match(html, /Stormbreaker/);
   assert.doesNotMatch(html, /codex-preview|Your site is taking shape/);
@@ -28,5 +29,8 @@ test("snapshot excludes secret-bearing keys", async () => {
   const data = JSON.parse(raw);
   assert.ok(data.sources.length >= 2);
   assert.ok(data.chain.eventCount >= 4);
-  assert.equal(data.controlContracts.every((item) => item.mode === "Simulation only"), true);
+  assert.equal(data.controlContracts.find((item) => item.id === "replay").mode, "Simulation only");
+  assert.equal(data.controlContracts.filter((item) => item.id !== "replay").every((item) => item.mode === "Live test adapter"), true);
+  assert.ok(data.coverage.length >= 4);
+  assert.equal(data.coverage.every((item) => ["observed", "confirmed_absent", "unreachable", "unsupported", "not_configured"].includes(item.status)), true);
 });

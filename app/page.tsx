@@ -7,6 +7,7 @@ export const metadata = {
 };
 
 type Health = "healthy" | "attention" | "unreachable";
+type CoverageStatus = "observed" | "confirmed_absent" | "unreachable" | "unsupported" | "not_configured";
 
 const healthLabel: Record<Health, string> = {
   healthy: "Nominal",
@@ -118,8 +119,15 @@ export default function Home() {
             </section>
           </div>
 
+          <section className="panel coverage-panel" id="coverage">
+            <div className="panel-title"><div><p className="kicker">Declared discovery envelope</p><h3>Source coverage manifest</h3></div><span className="evidence-chip">No silent gaps</span></div>
+            <div className="table-wrap"><table><thead><tr><th>Source</th><th>Declared scope</th><th>Coverage verdict</th><th>Observed</th><th>Known limitation</th></tr></thead><tbody>
+              {snapshot.coverage.map((coverage) => <tr key={coverage.id}><td><strong>{coverage.sourceId}</strong><small>{new Date(coverage.freshness).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" })}</small></td><td>{coverage.declaredScope}</td><td><span className={`coverage-status ${coverage.status as CoverageStatus}`}>{coverage.status.replaceAll("_", " ")}</span></td><td>{coverage.observed}</td><td>{coverage.limitation}</td></tr>)}
+            </tbody></table></div>
+          </section>
+
           <ControlContracts contracts={snapshot.controlContracts} />
-          <footer><span>DVC Agent Flight Recorder · MVP 0.1.0</span><span>Local only · no telemetry · secrets excluded at collection</span></footer>
+          <footer><span>DVC Agent Flight Recorder · MVP 0.2.0</span><span>Loopback control · local evidence · secrets excluded</span></footer>
         </section>
       </div>
     </main>

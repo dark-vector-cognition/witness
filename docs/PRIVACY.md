@@ -18,5 +18,8 @@ The collector rejects secret-bearing key names recursively and writes the ledger
 - endpoint reachability and allow-listed runtime versions/device counts
 - source timestamps, failure summaries, evidence ids, and hash-chain values
 - policy posture and registry-backed approval references
+- local operator identity plus approval reason, expiry, target id, policy result, and control receipt
+
+Raw single-use approval nonces exist only in client memory long enough to execute the approved request. Only a SHA-256 nonce hash is persisted. The control service binds to `127.0.0.1`, rejects non-local browser origins, limits request bodies, and never accepts an arbitrary PID, command, executable, or path.
 
 Infrastructure names and model identifiers may still be sensitive. Enterprise deployments need configurable pseudonymization, retention, access controls, export/delete policy, and customer-managed encryption before production use.

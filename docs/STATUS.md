@@ -8,17 +8,19 @@
 - Events append to a local JSONL ledger and are SHA-256 chained.
 - The operator UI renders the current generated snapshot and retains source failures.
 - Automated tests verify rendering, source count, secret-key exclusion, control mode, and the full ledger hash chain.
+- Every adapter now declares its discovery envelope and a coverage verdict, including known limitations.
+- The loopback-only control service creates one recorder-owned disposable test agent. Suspend, resume, and terminate use durable, expiring, single-use approvals and independently checked process-state receipts.
 
 ## Simulated
 
-- Replay, suspend, and terminate create an in-browser simulation receipt only. They do not contact or mutate a process.
-- Approval is a demonstration checkbox, not authenticated enterprise identity or separation of duties.
+- Replay remains evidence-only and does not re-run side effects.
+- Local operator identity is derived from the configured local operator id. It is durable evidence, but not enterprise authentication or separation of duties.
 
 ## Deferred
 
 - cryptographically signed source events, external timestamping, and tamper-resistant storage
 - continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, and enterprise deployment packaging
-- reviewed live-control adapters and target-specific capability negotiation
+- reviewed live-control adapters for real agents and vendor-specific capability negotiation
 - broad automatic discovery across vendor APIs
 
 ## Commercially risky

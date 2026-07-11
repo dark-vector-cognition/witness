@@ -1,6 +1,6 @@
 {
   "schemaVersion": "0.1.0",
-  "generatedAt": "2026-07-11T16:33:26.629Z",
+  "generatedAt": "2026-07-11T16:55:24.065Z",
   "machine": "firestarter",
   "window": "live local capture",
   "counts": {
@@ -51,7 +51,7 @@
       "name": "TicketBoard",
       "boundary": "local files · read only",
       "health": "healthy",
-      "evidence": "157 Markdown records indexed; product tickets LOCAL-184, LOCAL-185, LOCAL-186, LOCAL-187, LOCAL-188, LOCAL-189, LOCAL-190.",
+      "evidence": "168 Markdown records indexed; product tickets LOCAL-184, LOCAL-185, LOCAL-186, LOCAL-187, LOCAL-188, LOCAL-189, LOCAL-190, LOCAL-198, LOCAL-199, LOCAL-200, LOCAL-201.",
       "freshness": "captured now"
     },
     {
@@ -71,10 +71,48 @@
       "freshness": "captured now"
     }
   ],
+  "coverage": [
+    {
+      "id": "cov-ticketboard",
+      "sourceId": "ticketboard",
+      "declaredScope": "Local ticket identities, project, status, approval metadata, and counts",
+      "status": "observed",
+      "observed": 168,
+      "freshness": "2026-07-11T16:55:24.065Z",
+      "limitation": "Does not claim agent tool-call telemetry."
+    },
+    {
+      "id": "cov-vault",
+      "sourceId": "vault-rag",
+      "declaredScope": "Service reachability and health contract",
+      "status": "observed",
+      "observed": 1,
+      "freshness": "2026-07-11T16:55:24.065Z",
+      "limitation": "Document bodies and retrieval results are deliberately excluded."
+    },
+    {
+      "id": "cov-stormbreaker",
+      "sourceId": "stormbreaker",
+      "declaredScope": "ComfyUI runtime version and compute-device presence",
+      "status": "observed",
+      "observed": 1,
+      "freshness": "2026-07-11T16:55:24.065Z",
+      "limitation": "Generation payloads, prompts, and remote control are unsupported."
+    },
+    {
+      "id": "cov-models",
+      "sourceId": "local-models",
+      "declaredScope": "Unauthenticated local model identifiers",
+      "status": "not_configured",
+      "observed": 0,
+      "freshness": "2026-07-11T16:55:24.065Z",
+      "limitation": "Authenticated endpoints require a reviewed credential adapter; credentials are never inferred."
+    }
+  ],
   "events": [
     {
-      "id": "830a2e88-7c51-41c4-bb0c-9d51c5ff0618",
-      "at": "2026-07-11T16:33:26.629Z",
+      "id": "7bc40464-3017-4884-9a25-17f1f84e8384",
+      "at": "2026-07-11T16:55:24.065Z",
       "source": "recorder",
       "title": "Secret boundary enforced",
       "summary": "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.",
@@ -82,8 +120,8 @@
       "evidenceId": "POL-REDACT-01"
     },
     {
-      "id": "7bfbf7c9-55d8-46e3-afef-11e8ae4edd82",
-      "at": "2026-07-11T16:33:26.629Z",
+      "id": "bf52bbf5-86c9-4a06-a4bc-a15989da4968",
+      "at": "2026-07-11T16:55:24.065Z",
       "source": "prometheus-stormbreaker",
       "title": "Stormbreaker runtime observed",
       "summary": "ComfyUI 0.24.0 responded with 1 compute device record(s).",
@@ -91,8 +129,8 @@
       "evidenceId": "SB-200"
     },
     {
-      "id": "5ac6d730-9a14-4615-aa08-9ce37dfb51eb",
-      "at": "2026-07-11T16:33:26.629Z",
+      "id": "2dc3a4d0-4340-4cb6-8094-bc88cf3ef5f9",
+      "at": "2026-07-11T16:55:24.065Z",
       "source": "vault-rag",
       "title": "Knowledge runtime responded",
       "summary": "The read-only health endpoint returned status ok.",
@@ -100,17 +138,17 @@
       "evidenceId": "VR-200"
     },
     {
-      "id": "29a3eb6b-9542-45c2-bdda-e67a58b1bfdc",
-      "at": "2026-07-11T16:33:26.629Z",
+      "id": "0a3ffd2d-a232-40d6-89d3-c68aea917c52",
+      "at": "2026-07-11T16:55:24.065Z",
       "source": "ticketboard",
       "title": "Ticket inventory captured",
-      "summary": "157 local ticket records observed; 7 govern this product.",
+      "summary": "168 local ticket records observed; 11 govern this product.",
       "outcome": "success",
-      "evidenceId": "TB-157"
+      "evidenceId": "TB-168"
     },
     {
-      "id": "140a48e0-7c62-4a1d-b076-41b8f9c8981b",
-      "at": "2026-07-11T16:32:18.718Z",
+      "id": "9d463434-f39e-4e8e-9283-1b3a04428cd3",
+      "at": "2026-07-11T16:54:16.716Z",
       "source": "recorder",
       "title": "Secret boundary enforced",
       "summary": "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.",
@@ -118,8 +156,8 @@
       "evidenceId": "POL-REDACT-01"
     },
     {
-      "id": "0c7a70da-b701-4665-b830-0f3de0aa2651",
-      "at": "2026-07-11T16:32:18.718Z",
+      "id": "a9c31710-6844-4597-b7bc-8f7d6ce78d45",
+      "at": "2026-07-11T16:54:16.716Z",
       "source": "prometheus-stormbreaker",
       "title": "Stormbreaker runtime observed",
       "summary": "ComfyUI 0.24.0 responded with 1 compute device record(s).",
@@ -127,8 +165,8 @@
       "evidenceId": "SB-200"
     },
     {
-      "id": "136676df-8cee-4856-a29c-9361c0d5af51",
-      "at": "2026-07-11T16:32:18.718Z",
+      "id": "6e62df5f-4fcd-4102-b066-f28d876de9ec",
+      "at": "2026-07-11T16:54:16.716Z",
       "source": "vault-rag",
       "title": "Knowledge runtime responded",
       "summary": "The read-only health endpoint returned status ok.",
@@ -136,31 +174,31 @@
       "evidenceId": "VR-200"
     },
     {
-      "id": "c13d6375-86bd-439b-a530-080d17d28026",
-      "at": "2026-07-11T16:32:18.718Z",
+      "id": "208af09a-45b3-4692-b857-47916786c91e",
+      "at": "2026-07-11T16:54:16.716Z",
       "source": "ticketboard",
       "title": "Ticket inventory captured",
-      "summary": "157 local ticket records observed; 7 govern this product.",
+      "summary": "168 local ticket records observed; 11 govern this product.",
       "outcome": "success",
-      "evidenceId": "TB-157"
+      "evidenceId": "TB-168"
     },
     {
-      "id": "0b7b88a6-13d6-4065-9f72-42894b1e6068",
-      "at": "2026-07-11T16:30:20.887Z",
-      "source": "recorder",
-      "title": "Secret boundary enforced",
-      "summary": "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.",
+      "id": "e173e5e6-ab21-47c6-bef1-c6b94e05ab7e",
+      "at": "2026-07-11T16:53:58.770Z",
+      "source": "control-service",
+      "title": "resume success",
+      "summary": "resume verified by independent process-state check.",
       "outcome": "success",
-      "evidenceId": "POL-REDACT-01"
+      "evidenceId": "RCP-09093147-3bda-4056-9156-bf72b337f760"
     },
     {
-      "id": "462521f1-c4a7-4dab-86f7-6e9fc4494e9a",
-      "at": "2026-07-11T16:30:20.887Z",
-      "source": "prometheus-stormbreaker",
-      "title": "Stormbreaker runtime observed",
-      "summary": "ComfyUI 0.24.0 responded with 1 compute device record(s).",
+      "id": "34290d45-ee72-4b0a-9f2a-1be7142a7d77",
+      "at": "2026-07-11T16:53:53.646Z",
+      "source": "control-service",
+      "title": "resume approval issued",
+      "summary": "Single-use approval recorded for alsharma@firestarter; expires in 120 seconds.",
       "outcome": "success",
-      "evidenceId": "SB-200"
+      "evidenceId": "APR-40eb415f-28bc-4618-b1b4-7ec208f8f58c"
     }
   ],
   "permissions": [
@@ -212,22 +250,29 @@
     {
       "id": "suspend",
       "label": "Suspend",
-      "description": "Request a cooperative pause at the next declared safe checkpoint.",
-      "mode": "Simulation only",
-      "failure": "Times out to unknown state; never claims suspension without adapter acknowledgement."
+      "description": "Pause only the recorder-owned disposable test agent.",
+      "mode": "Live test adapter",
+      "failure": "Fails closed unless target ownership, single-use approval, and post-action process state all verify."
+    },
+    {
+      "id": "resume",
+      "label": "Resume",
+      "description": "Resume the recorder-owned disposable test agent after a verified suspension.",
+      "mode": "Live test adapter",
+      "failure": "Fails closed unless the target is owned, suspended, and covered by a fresh approval."
     },
     {
       "id": "terminate",
       "label": "Terminate",
-      "description": "Request bounded shutdown through an explicitly authorized adapter.",
-      "mode": "Simulation only",
-      "failure": "Escalates to an operator when graceful shutdown is unconfirmed; no blind process kill."
+      "description": "Gracefully stop only the recorder-owned disposable test agent.",
+      "mode": "Live test adapter",
+      "failure": "Never accepts an arbitrary PID or shell command; an unverified exit is reported as unknown."
     }
   ],
   "chain": {
-    "eventCount": 16,
-    "lastHash": "ee5ffb986697bce1cbe0357559be24b977b6f7aab3e9022156375ca5c6d890cc",
-    "shortHash": "ee5ffb986697",
+    "eventCount": 41,
+    "lastHash": "a62f4813a9dc47798a36e1a8380f64d5235205da75797d009c8917dc684452f5",
+    "shortHash": "a62f4813a9dc",
     "verified": true
   }
 }

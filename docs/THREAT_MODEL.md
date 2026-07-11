@@ -58,6 +58,7 @@ flowchart LR
 - Completion verdicts include claim, proof, uncertainty, and source freshness.
 - Control defaults to denied. Approval, adapter-declared capability, target identity, idempotency key, timeout, and receipt are required.
 - A timeout produces `unknown`, not `success`. Termination never falls back to an undisclosed blind process kill.
+- The first live adapter owns the process it controls, addresses it by an unpredictable target id, exposes no PID or command input, binds to loopback, and requires an expiring single-use nonce whose hash—not raw value—is persisted.
 
 ## Residual risk
 

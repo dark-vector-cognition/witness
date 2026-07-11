@@ -1,7 +1,8 @@
-import { createHash, randomUUID } from "node:crypto";
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { appendLedgerEvents, readLedger, verifyLedger } from "./lib/ledger.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const ticketRoot = process.env.TICKET_STORE_ROOT || "/Users/alsharma/Projects/experience-layering-main/ticket_store";
@@ -40,28 +41,6 @@ async function readTicketMeta() {
   return { total: records.length, flightRecorder, path: dir };
 }
 
-async function previousHash() {
-  try {
-    const lines = (await readFile(ledgerPath, "utf8")).trim().split("\n").filter(Boolean);
-    return lines.length ? JSON.parse(lines.at(-1)).hash : "GENESIS";
-  } catch { return "GENESIS"; }
-}
-
-async function appendEvents(events) {
-  await mkdir(path.dirname(ledgerPath), { recursive: true });
-  let prior = await previousHash();
-  const chained = [];
-  for (const event of events) {
-    const payload = { ...event, previousHash: prior };
-    const hash = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
-    const record = { ...payload, hash };
-    await appendFile(ledgerPath, `${JSON.stringify(record)}\n`, { mode: 0o600 });
-    chained.push(record);
-    prior = hash;
-  }
-  return chained;
-}
-
 const [tickets, vault, stormbreaker, localModels] = await Promise.all([
   readTicketMeta(),
   probe("http://127.0.0.1:8742/health"),
@@ -77,8 +56,8 @@ const captureEvents = [
   { id: randomUUID(), at: now, source: "prometheus-stormbreaker", title: stormbreaker.ok ? "Stormbreaker runtime observed" : "Stormbreaker runtime unreachable", summary: stormbreaker.ok ? `ComfyUI ${stormbreaker.data?.system?.comfyui_version || "version unknown"} responded with ${devices.length} compute device record(s).` : "The safe system-stats probe failed; no control operation was attempted.", outcome: stormbreaker.ok ? "success" : "failed", evidenceId: `SB-${stormbreaker.status || "ERR"}` },
   { id: randomUUID(), at: now, source: "recorder", title: "Secret boundary enforced", summary: "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.", outcome: "success", evidenceId: "POL-REDACT-01" },
 ];
-const newRecords = await appendEvents(captureEvents);
-const allLines = (await readFile(ledgerPath, "utf8")).trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+await appendLedgerEvents(ledgerPath, captureEvents);
+const allLines = await readLedger(ledgerPath);
 const tail = allLines.slice(-10).reverse();
 const lastHash = allLines.at(-1)?.hash || "GENESIS";
 
@@ -100,6 +79,12 @@ const snapshot = {
     { id: "vault-rag", name: "vault-rag", boundary: "localhost health · read only", health: vault.ok ? "healthy" : "unreachable", evidence: vault.ok ? "Health endpoint returned an allow-listed ok response." : "Health probe failed; recovery deliberately not attempted.", freshness: "captured now" },
     { id: "stormbreaker", name: "Stormbreaker / ComfyUI", boundary: "Tailscale HTTP · read only", health: stormbreaker.ok ? "healthy" : "unreachable", evidence: stormbreaker.ok ? `Runtime ${stormbreaker.data?.system?.comfyui_version || "unknown"}; ${devices.length} compute device(s).` : "System-stats endpoint did not respond.", freshness: "captured now" },
   ],
+  coverage: [
+    { id: "cov-ticketboard", sourceId: "ticketboard", declaredScope: "Local ticket identities, project, status, approval metadata, and counts", status: tickets.total ? "observed" : "confirmed_absent", observed: tickets.total, freshness: now, limitation: "Does not claim agent tool-call telemetry." },
+    { id: "cov-vault", sourceId: "vault-rag", declaredScope: "Service reachability and health contract", status: vault.ok ? "observed" : "unreachable", observed: vault.ok ? 1 : 0, freshness: now, limitation: "Document bodies and retrieval results are deliberately excluded." },
+    { id: "cov-stormbreaker", sourceId: "stormbreaker", declaredScope: "ComfyUI runtime version and compute-device presence", status: stormbreaker.ok ? "observed" : "unreachable", observed: devices.length, freshness: now, limitation: "Generation payloads, prompts, and remote control are unsupported." },
+    { id: "cov-models", sourceId: "local-models", declaredScope: "Unauthenticated local model identifiers", status: localModels.ok ? (modelIds.length ? "observed" : "confirmed_absent") : "not_configured", observed: modelIds.length, freshness: now, limitation: "Authenticated endpoints require a reviewed credential adapter; credentials are never inferred." },
+  ],
   events: tail.map(({ id, at, source, title, summary, outcome, evidenceId }) => ({ id, at, source, title, summary, outcome, evidenceId })),
   permissions: [
     { id: "p1", identity: "Board Steward", kind: "operating agent", access: "Ticket metadata and comments", policy: "allowed", policyLabel: "Read allowed", approver: "Registry spec · LOCAL-146" },
@@ -109,10 +94,11 @@ const snapshot = {
   ],
   controlContracts: [
     { id: "replay", label: "Replay", description: "Reconstruct inputs and ordered evidence without re-running side effects.", mode: "Simulation only", failure: "Fails closed when inputs, adapter version, or evidence hashes are incomplete." },
-    { id: "suspend", label: "Suspend", description: "Request a cooperative pause at the next declared safe checkpoint.", mode: "Simulation only", failure: "Times out to unknown state; never claims suspension without adapter acknowledgement." },
-    { id: "terminate", label: "Terminate", description: "Request bounded shutdown through an explicitly authorized adapter.", mode: "Simulation only", failure: "Escalates to an operator when graceful shutdown is unconfirmed; no blind process kill." },
+    { id: "suspend", label: "Suspend", description: "Pause only the recorder-owned disposable test agent.", mode: "Live test adapter", failure: "Fails closed unless target ownership, single-use approval, and post-action process state all verify." },
+    { id: "resume", label: "Resume", description: "Resume the recorder-owned disposable test agent after a verified suspension.", mode: "Live test adapter", failure: "Fails closed unless the target is owned, suspended, and covered by a fresh approval." },
+    { id: "terminate", label: "Terminate", description: "Gracefully stop only the recorder-owned disposable test agent.", mode: "Live test adapter", failure: "Never accepts an arbitrary PID or shell command; an unverified exit is reported as unknown." },
   ],
-  chain: { eventCount: allLines.length, lastHash, shortHash: lastHash.slice(0, 12), verified: newRecords.every((record, index) => index === 0 || record.previousHash === newRecords[index - 1].hash) },
+  chain: { eventCount: allLines.length, lastHash, shortHash: lastHash.slice(0, 12), verified: verifyLedger(allLines) },
 };
 
 await mkdir(path.dirname(outputPath), { recursive: true });
