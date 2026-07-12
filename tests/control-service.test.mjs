@@ -57,3 +57,36 @@ test("durable single-use approval controls only the owned disposable agent", asy
     await rm(dataRoot, { recursive: true, force: true });
   }
 });
+
+test("expired single-use approval is denied and never changes target state", async () => {
+  const dataRoot = await mkdtemp(path.join(os.tmpdir(), "dvc-flight-recorder-"));
+  const service = await createControlService({ dataRoot, port: 0, operator: "test-operator", approvalTtlMs: 30 });
+  const base = `http://127.0.0.1:${service.port}`;
+  try {
+    const approved = await post(base, "/approvals", { targetId: service.targetId, action: "suspend", reason: "Verify approval expiry window" });
+    assert.equal(approved.status, 201);
+    const { approvalId, nonce } = approved.body;
+    assert.ok(Date.parse(approved.body.expiresAt) > Date.parse(approved.body.issuedAt));
+
+    // Let the 30ms approval window lapse before exercising the control.
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    const expired = await post(base, "/controls", { approvalId, nonce, targetId: service.targetId, action: "suspend" });
+    assert.equal(expired.status, 403);
+    assert.equal(expired.body.outcome, "denied");
+    assert.equal(expired.body.beforeState, "running");
+    assert.equal(expired.body.afterState, "running");
+
+    // Independent re-check: the expired approval never suspended the disposable target.
+    const status = await (await fetch(`${base}/status`)).json();
+    assert.equal(status.target.state, "running");
+
+    // The denial is recorded as an immutable, verifiable audit event.
+    const receiptsRaw = await readFile(path.join(dataRoot, "control", "receipts.jsonl"), "utf8");
+    assert.match(receiptsRaw, new RegExp(approvalId));
+    assert.equal(verifyLedger(await readLedger(path.join(dataRoot, "ledger", "events.jsonl"))), true);
+  } finally {
+    await service.close();
+    await rm(dataRoot, { recursive: true, force: true });
+  }
+});

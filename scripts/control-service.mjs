@@ -58,6 +58,7 @@ export async function createControlService(options = {}) {
   const port = options.port ?? Number(process.env.DVC_CONTROL_PORT || 4317);
   const host = options.host || "127.0.0.1";
   const operator = options.operator || process.env.DVC_OPERATOR_ID || `${os.userInfo().username}@${os.hostname()}`;
+  const approvalTtlMs = options.approvalTtlMs ?? 120_000;
   const approvalsPath = path.join(dataRoot, "control", "approvals.jsonl");
   const receiptsPath = path.join(dataRoot, "control", "receipts.jsonl");
   const ledgerPath = path.join(dataRoot, "ledger", "events.jsonl");
@@ -96,10 +97,10 @@ export async function createControlService(options = {}) {
         if (reason.length < 8 || reason.length > 240) return json(response, 400, { error: "reason must be 8-240 characters" }, origin);
         const nonce = randomBytes(24).toString("base64url");
         const issuedAt = new Date();
-        const approval = { approvalId: `APR-${randomUUID()}`, operator, targetId, action: body.action, reason, issuedAt: issuedAt.toISOString(), expiresAt: new Date(issuedAt.getTime() + 120_000).toISOString(), nonceHash: createHash("sha256").update(nonce).digest("hex"), policyResult: "allow_single_use" };
+        const approval = { approvalId: `APR-${randomUUID()}`, operator, targetId, action: body.action, reason, issuedAt: issuedAt.toISOString(), expiresAt: new Date(issuedAt.getTime() + approvalTtlMs).toISOString(), nonceHash: createHash("sha256").update(nonce).digest("hex"), policyResult: "allow_single_use" };
         issued.set(approval.approvalId, approval);
         await appendJsonl(approvalsPath, approval);
-        await appendLedgerEvents(ledgerPath, [{ id: randomUUID(), at: approval.issuedAt, source: "control-service", title: `${body.action} approval issued`, summary: `Single-use approval recorded for ${operator}; expires in 120 seconds.`, outcome: "success", evidenceId: approval.approvalId }]);
+        await appendLedgerEvents(ledgerPath, [{ id: randomUUID(), at: approval.issuedAt, source: "control-service", title: `${body.action} approval issued`, summary: `Single-use approval recorded for ${operator}; expires in ${Math.round(approvalTtlMs / 1000)} seconds.`, outcome: "success", evidenceId: approval.approvalId }]);
         return json(response, 201, { approvalId: approval.approvalId, operator, targetId, action: approval.action, issuedAt: approval.issuedAt, expiresAt: approval.expiresAt, nonce }, origin);
       }
       if (request.method === "POST" && request.url === "/controls") {
