@@ -1,6 +1,6 @@
 # Witness — the DVC Agent Flight Recorder
 
-**A local-first, cross-vendor record of what the AI agents in your company exist, what they can touch, who approved that, and what they actually did — with evidence you can hand to an auditor.**
+**A local-first, cross-vendor record of which AI agents exist in your company, what they can touch, and what they actually did — under a declared (not yet verified) principal, with evidence you can hand to an auditor.**
 
 Witness is the instrument behind [Agent Flight Check](https://darkvectorcognition.ai/flight-check/), Dark Vector Cognition's two-week, fixed-price audit of an organisation's agent estate. The recorder is open source under Apache-2.0 and complete for one engineer on one machine. The Flight Check is where an organisation buys the reading of it.
 

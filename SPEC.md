@@ -1,5 +1,7 @@
 # Witness record format — v0.1
 
+(Record-format version, carried in every record's `v` field. It is independent of the Witness release number — Witness v0.2 writes format v0.1.)
+
 Status: **stable for v0.1**. Implementable without this repository's code. Changes bump `v`.
 
 ## Storage
