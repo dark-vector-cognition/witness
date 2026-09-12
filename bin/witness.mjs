@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
+import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { runProxy } from "../lib/proxy.mjs";
 import { candidateConfigs, rewriteConfig } from "../lib/wrap.mjs";
 import { verifyChain } from "../lib/record.mjs";
@@ -20,6 +21,8 @@ function usage(code = 0) {
 
   witness [--as <principal>] [--name <server>] [--allow k1,k2] -- <command> [args...]
       Run <command> as an MCP stdio server behind a transparent recorder.
+  witness http --upstream <url> [--listen 127.0.0.1:0] [--as p] [--name s] [--allow k,k]
+      Local reverse proxy for a remote MCP server (Streamable HTTP or SSE). Prints the address to point your harness at.
   witness wrap [config] [--as p] [--dry-run] [--node /path/node] [--bin /path/witness.mjs]
                                 Rewrite MCP config entries to run through Witness (keeps a .witness-bak).
   witness unwrap [config]                      Reverse it.
@@ -53,7 +56,17 @@ if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help") usage(0);
 
 function opt(name, fallback = null) { const i = argv.indexOf(name); return i !== -1 && argv[i + 1] !== undefined ? argv[i + 1] : fallback; }
 
-if (argv[0] === "wrap" || argv[0] === "unwrap") {
+if (argv[0] === "http") {
+  const upstream = opt("--upstream");
+  if (!upstream) { process.stderr.write("witness http: --upstream <url> is required\n"); process.exit(2); }
+  const [listenHost, listenPort] = String(opt("--listen", "127.0.0.1:0")).split(":");
+  const allowKeys = String(opt("--allow", "")).split(",").map((s) => s.trim()).filter(Boolean);
+  const proxy = await startHttpProxy({ upstream, listenHost: listenHost || "127.0.0.1", listenPort: Number(listenPort || 0), principal: opt("--as", process.env.WITNESS_AS || null), serverName: opt("--name"), allowKeys });
+  process.stdout.write(`${JSON.stringify({ listen: proxy.local, upstream, session: proxy.session, log: proxy.file })}\n`);
+  process.stderr.write(`[witness] recording ${upstream} at ${proxy.local} — point your MCP config's "url" here. Ctrl-C to stop.\n`);
+  const stop = async () => { await proxy.close(); process.exit(0); };
+  process.on("SIGINT", stop); process.on("SIGTERM", stop);
+} else if (argv[0] === "wrap" || argv[0] === "unwrap") {
   const mode = argv[0];
   const optValues = new Set([opt("--as"), opt("--node"), opt("--bin")].filter(Boolean));
   const explicit = argv.slice(1).find((a) => !a.startsWith("--") && !optValues.has(a));
@@ -147,8 +160,8 @@ if (argv[0] === "tail") {
   };
   drain();
   setInterval(drain, 500);
-} else {
-  // proxy mode
+} else if (argv[0] !== "http") {
+  // proxy mode (http mode is long-running and dispatched above)
   let principal = process.env.WITNESS_AS || null;
   let serverName = null;
   let allowKeys = [];

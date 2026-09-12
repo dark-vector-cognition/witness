@@ -36,6 +36,7 @@ node bin/witness.mjs report      # markdown digest of the last 7 days — the th
 node bin/witness.mjs query --tool read_file --status error --since 24h
 node bin/witness.mjs anchor --git   # commit every chain head to a git repo in ~/.witness (third-party clock)
 node bin/witness.mjs unwrap      # put the config back
+node bin/witness.mjs http --upstream https://mcp.example.com/mcp --as you@company   # remote server: point the config's "url" at the printed 127.0.0.1 address
 ```
 
 `wrap` auto-detects `.mcp.json` (Claude Code project), `~/.claude.json`, `~/.cursor/mcp.json`, and Claude Desktop. Tested end-to-end against a third-party server (desktop-commander 0.2.50, 26 tools): transparent relay, correct ok/error classification, hashed arguments, verified chain.
@@ -45,6 +46,7 @@ Every frame passes through untouched. If Witness cannot write its log, it says s
 ## Real today (v0.2)
 
 - **MCP stdio proxy.** `witness -- <server command>` relays JSON-RPC between any harness (Claude Code, Cursor, Claude Desktop, Cowork) and any stdio MCP server, recording `session_start`, the client identity from `initialize`, every `tools/call` with a SHA-256 of its arguments, every result with status (`ok` / `error` / `unknown` if the server never answered), latency, and `session_end` with counts. Non-JSON lines pass through and are recorded as `raw`. Tested against a fake server for byte-for-byte transparency, outcome classification, secret exclusion, chain verification, tamper detection, and recorder-failure isolation.
+- **HTTP / SSE transport.** `witness http --upstream <url>` is a loopback reverse proxy for remote MCP servers (Streamable HTTP and legacy SSE): bodies relay byte-for-byte, `Authorization` passes through and is never recorded, JSON and `text/event-stream` responses are parsed on the way past into the same `tool_call` / `tool_result` records, an unreachable upstream answers a JSON-RPC 502 and the call seals as `unknown`. Tested against a fake HTTP MCP server for split-chunk SSE, error classification, secret exclusion and chain verification.
 - **`wrap` / `unwrap`, `query`, `report`, `anchor`.** Config rewriting with a backup and dry-run; joined call rows filterable by tool, server, principal, status, time; a markdown digest with error rate and p50/p95 latency per tool; chain heads checkpointed into a chain of their own and optionally git-committed.
 - **Declared principal.** `--as you@company` (or `WITNESS_AS`) labels every call. The record says `verified: false`, because it is. Proven identity is the org-boundary product, not a v0.2 claim.
 
@@ -63,11 +65,10 @@ Every frame passes through untouched. If Witness cannot write its log, it says s
 
 These are the gaps between v0.2 and the full Flight Check promise, in the order we are closing them:
 
-1. **HTTP / SSE transport** for remote MCP servers; today only stdio is proxied.
-2. **External timestamping** of anchored chain heads (today: your own git repo is the clock).
-3. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
-4. **Verified principals and device-backed operator identity** to replace declared labels in records and approval receipts.
-5. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
+1. **External timestamping** of anchored chain heads (today: your own git repo is the clock).
+2. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
+3. **Verified principals and device-backed operator identity** to replace declared labels in records and approval receipts.
+4. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
 
 The full truth ledger — real, simulated, deferred, and commercially risky — is kept current in [docs/STATUS.md](docs/STATUS.md).
 
