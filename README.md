@@ -4,7 +4,7 @@
 
 Witness is the instrument behind [Agent Flight Check](https://darkvectorcognition.ai/flight-check/), Dark Vector Cognition's two-week, fixed-price audit of an organisation's agent estate. The recorder is open source under Apache-2.0 and complete for one engineer on one machine. The Flight Check is where an organisation buys the reading of it.
 
-> Status: **v0.2 — working local MVP.** Everything in the "Real today" section below runs, is tested, and has been exercised end-to-end. Everything under "Next" is not built yet. We would rather you find that out here than after an install.
+> Status: **v0.2 — working local MVP, now with the MCP proxy recorder.** Everything in the "Real today" section below runs and is tested. Everything under "Next" is not built yet. We would rather you find that out here than after an install.
 
 ## Why it exists
 
@@ -22,7 +22,24 @@ Two rules govern the whole design:
 1. **Absence of evidence is never evidence of absence.** Every collector declares a *coverage manifest* — what it observed, what it confirmed absent, and what was unreachable, unsupported, or simply never configured. A recorder that overclaims is worse than no recorder.
 2. **Observation before control.** Reading is safe by default. Any control operation (suspend, resume, terminate) requires an explicit, expiring, single-use approval, produces a receipt, and fails closed.
 
+## 60-second start: record one MCP server
+
+```bash
+git clone https://github.com/dark-vector-cognition/witness && cd witness && npm install
+# wrap any stdio MCP server — in .mcp.json / claude_desktop_config.json / Cursor's mcp.json:
+#   "github": { "command": "node", "args": ["/path/to/witness/bin/witness.mjs", "--as", "you@company", "--",
+#                                           "npx", "-y", "@modelcontextprotocol/server-github"] }
+node bin/witness.mjs tail        # live: every tool call, its outcome, its latency
+node bin/witness.mjs verify      # walk every chain; exit 1 on the first broken link
+node bin/witness.mjs sessions    # what has been recorded
+```
+
+Every frame passes through untouched. If Witness cannot write its log, it says so on stderr and keeps relaying — breakage can cost records, never uptime. Records live in `~/.witness/log/<session>.jsonl` (`WITNESS_HOME` to move them). The format is documented in [SPEC.md](SPEC.md) and is implementable without this code.
+
 ## Real today (v0.2)
+
+- **MCP stdio proxy.** `witness -- <server command>` relays JSON-RPC between any harness (Claude Code, Cursor, Claude Desktop, Cowork) and any stdio MCP server, recording `session_start`, the client identity from `initialize`, every `tools/call` with a SHA-256 of its arguments, every result with status (`ok` / `error` / `unknown` if the server never answered), latency, and `session_end` with counts. Non-JSON lines pass through and are recorded as `raw`. Tested against a fake server for byte-for-byte transparency, outcome classification, secret exclusion, chain verification, tamper detection, and recorder-failure isolation.
+- **Declared principal.** `--as you@company` (or `WITNESS_AS`) labels every call. The record says `verified: false`, because it is. Proven identity is the org-boundary product, not a v0.2 claim.
 
 - **Append-only evidence ledger.** Every collection and control event is a JSONL record, SHA-256 chained to the previous one. `npm run verify:ledger` re-walks the whole chain; a 41-event chain has been verified end-to-end.
 - **Coverage manifests.** Each adapter emits a discovery envelope and a verdict — *observed / absent / unreachable / unsupported / unconfigured* — with its known limitations stated in the record, not in the marketing.
@@ -31,6 +48,7 @@ Two rules govern the whole design:
 - **Bounded control.** A loopback-only (`127.0.0.1`) control service that can suspend, resume, and terminate one *recorder-owned* disposable test agent. Approvals are two-minute, single-use, nonce-bound; only the nonce hash is persisted. The service never accepts an arbitrary PID, executable, path, or shell command from the interface. A browser-verified `running → suspended → running` cycle produces durable receipts.
 - **Evidence export.** `npm run export:evidence` writes an operator-controlled bundle (JSON) with the verified chain — the artefact a Flight Check readout is built from.
 - **Secret exclusion by construction.** Collectors strip any key matching `token | secret | password | authorization | cookie | api_key | credential` recursively, and the test suite asserts that no such key reaches the snapshot or the export.
+- **Proxy sessions feed the operator UI.** Ingest reconciles every recorded session — servers seen, calls, outcomes, broken chains — into the inventory, coverage manifest and timeline, so a Flight Check readout is built from the same records `witness verify` checks.
 - **Three reference adapters** for local sources (a Markdown ticket store, a localhost retrieval service, and a read-only ComfyUI runtime over a private network), included as worked examples of the adapter contract.
 - **Operator interface.** Overview, coverage, mission timeline, permission matrix, and control — readable by an IT director without a terminal.
 
@@ -38,11 +56,12 @@ Two rules govern the whole design:
 
 These are the gaps between v0.2 and the full Flight Check promise, in the order we are closing them:
 
-1. **MCP proxy adapter.** A transparent proxy that sits in front of MCP servers and records every tool call as a ledger event. This is what turns "ten days of records" from a claim into a file. Spec is written; this is the current build.
-2. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
-3. **Device-backed operator identity** to replace `local-user@machine` in approval receipts.
-4. Signed source events, external timestamping, and tamper-resistant storage.
-5. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
+1. **`witness wrap` / `unwrap`** — rewrite the harness config files for you (today the config edit is by hand), plus `query` and `report` (the weekly digest).
+2. **HTTP / SSE transport** for remote MCP servers; today only stdio is proxied.
+3. **Chain anchoring** — commit chain heads to git or a timestamp authority so the record gains a third-party clock.
+4. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
+5. **Verified principals and device-backed operator identity** to replace declared labels in records and approval receipts.
+6. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
 
 The full truth ledger — real, simulated, deferred, and commercially risky — is kept current in [docs/STATUS.md](docs/STATUS.md).
 
@@ -55,21 +74,13 @@ npm install
 npm run dev          # ingests from configured sources, starts the control service, opens http://localhost:3000
 npm run verify:ledger
 npm run export:evidence
-npm test             # ingest + ledger verification + production build + rendered-interface tests
+npm test             # ingest + ledger verification + production build + proxy + interface tests
+npm run test:proxy   # just the proxy suite (fast, no build)
 ```
 
 On macOS, `Launch Flight Recorder.command` does the same by double-click.
 
-The reference adapters are configured by environment variable and degrade to a declared coverage status when unset — never a crash:
-
-| Variable | Adapter | When unset |
-|---|---|---|
-| `TICKET_STORE_ROOT` | Markdown ticket store | `not_configured` |
-| `VAULT_RAG_HEALTH_URL` | localhost retrieval service (default `http://127.0.0.1:8742/health`) | probed; `unreachable` if absent |
-| `STORMBREAKER_STATS_URL` | read-only ComfyUI `system_stats` on a private network | `not_configured` (not probed) |
-| `LOCAL_MODELS_URL` | unauthenticated local model list (default `http://127.0.0.1:1234/v1/models`) | probed; `not_configured` if absent |
-
-A fresh clone with nothing configured still ingests, verifies its chain, builds, and passes `npm test`.
+The reference ticket-store adapter reads from `TICKET_STORE_ROOT` (defaults to `~/Projects/experience-layering-main/ticket_store`); point it at your own store or leave it unconfigured — the coverage manifest will say so rather than fail silently.
 
 ## What it never does
 

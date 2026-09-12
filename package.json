@@ -20,7 +20,8 @@
     "test": "npm run ingest && npm run verify:ledger && npm run build && node --test tests/*.test.mjs",
     "verify:ledger": "node scripts/verify-ledger.mjs",
     "export:evidence": "node scripts/export-evidence.mjs",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "test:proxy": "node --test tests/proxy.test.mjs"
   },
   "dependencies": {
     "next": "16.3.5",
@@ -44,5 +45,15 @@
     "vite": "8.3.0",
     "wrangler": "4.131.1"
   },
-  "type": "module"
+  "type": "module",
+  "bin": {
+    "witness": "bin/witness.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "SPEC.md",
+    "README.md",
+    "LICENSE"
+  ]
 }

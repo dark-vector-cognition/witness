@@ -3,6 +3,29 @@ import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { appendLedgerEvents, readLedger, verifyLedger } from "./lib/ledger.mjs";
+import { verifyChain } from "../lib/record.mjs";
+import { listSessionFiles, logDir, readRecords } from "../lib/session-log.mjs";
+
+/** Proxy sessions recorded by `witness -- <server>`: counted and chain-verified, never re-read for content. */
+function readProxySessions() {
+  const dir = logDir();
+  let files = [];
+  try { files = listSessionFiles(dir); } catch { files = []; }
+  const summary = { dir, sessions: 0, calls: 0, ok: 0, error: 0, unknown: 0, brokenChains: 0, servers: new Set(), latest: null };
+  for (const file of files) {
+    let records;
+    try { records = readRecords(file); } catch { summary.brokenChains += 1; continue; }
+    if (!verifyChain(records).ok) summary.brokenChains += 1;
+    summary.sessions += 1;
+    for (const record of records) {
+      if (record.event === "session_start" && record.server?.name) summary.servers.add(record.server.name);
+      if (record.event === "tool_call") summary.calls += 1;
+      if (record.event === "tool_result") summary[record.outcome?.status === "ok" ? "ok" : record.outcome?.status === "error" ? "error" : "unknown"] += 1;
+      if (record.ts && (!summary.latest || record.ts > summary.latest)) summary.latest = record.ts;
+    }
+  }
+  return { ...summary, servers: [...summary.servers] };
+}
 
 const root = path.resolve(import.meta.dirname, "..");
 const ticketRoot = process.env.TICKET_STORE_ROOT || path.join(os.homedir(), "Projects", "experience-layering-main", "ticket_store");
@@ -48,6 +71,7 @@ async function readTicketMeta() {
   return { total: records.length, flightRecorder, path: dir };
 }
 
+const proxy = readProxySessions();
 const stormbreakerUrl = process.env.STORMBREAKER_STATS_URL || "";
 const [tickets, vault, stormbreaker, localModels] = await Promise.all([
   readTicketMeta(),
@@ -62,6 +86,7 @@ const captureEvents = [
   { id: randomUUID(), at: now, source: "ticketboard", title: tickets.missing ? "Ticket store not configured" : "Ticket inventory captured", summary: tickets.missing ? `No ticket store at the configured path (${tickets.reason}); set TICKET_STORE_ROOT to observe one.` : `${tickets.total} local ticket records observed; ${tickets.flightRecorder.length} govern this product.`, outcome: tickets.missing ? "attention" : "success", evidenceId: `TB-${tickets.missing ? "UNCONFIGURED" : tickets.total}` },
   { id: randomUUID(), at: now, source: "vault-rag", title: vault.ok ? "Knowledge runtime responded" : "Knowledge runtime probe failed", summary: vault.ok ? "The read-only health endpoint returned status ok." : "The failed probe is retained; no restart was attempted.", outcome: vault.ok ? "success" : "attention", evidenceId: `VR-${vault.status || "ERR"}` },
   { id: randomUUID(), at: now, source: "prometheus-stormbreaker", title: stormbreaker.ok ? "Stormbreaker runtime observed" : stormbreaker.configured === false ? "Stormbreaker runtime not configured" : "Stormbreaker runtime unreachable", summary: stormbreaker.ok ? `ComfyUI ${stormbreaker.data?.system?.comfyui_version || "version unknown"} responded with ${devices.length} compute device record(s).` : stormbreaker.configured === false ? "No STORMBREAKER_STATS_URL set; the runtime was not probed." : "The safe system-stats probe failed; no control operation was attempted.", outcome: stormbreaker.ok ? "success" : stormbreaker.configured === false ? "attention" : "failed", evidenceId: `SB-${stormbreaker.status || "ERR"}` },
+  { id: randomUUID(), at: now, source: "witness-proxy", title: proxy.sessions ? "Proxy sessions reconciled" : "No proxy sessions recorded", summary: proxy.sessions ? `${proxy.sessions} session(s) across ${proxy.servers.length} server(s): ${proxy.calls} tool calls (${proxy.ok} ok, ${proxy.error} error, ${proxy.unknown} unanswered); ${proxy.brokenChains} broken chain(s).` : "Wrap an MCP server with `witness -- <command>` to start recording tool calls.", outcome: proxy.brokenChains ? "failed" : proxy.sessions ? "success" : "attention", evidenceId: `WP-${proxy.sessions}` },
   { id: randomUUID(), at: now, source: "recorder", title: "Secret boundary enforced", summary: "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.", outcome: "success", evidenceId: "POL-REDACT-01" },
 ];
 await mkdir(path.dirname(ledgerPath), { recursive: true });
@@ -76,6 +101,7 @@ const inventory = [
   { id: "mcp-ticketboard", name: "TicketBoard MCP", kind: "MCP server", vendor: "local", health: tickets.total > 0 ? "healthy" : "attention" },
   { id: "mcp-prometheus", name: "Prometheus bridge", kind: "MCP server", vendor: "local", health: stormbreaker.ok ? "healthy" : "unreachable" },
   { id: "connector-vault", name: "vault-rag", kind: "connector", vendor: "local", health: vault.ok ? "healthy" : "unreachable" },
+  ...proxy.servers.map((name) => ({ id: `mcp-proxied-${name}`, name: `${name} (via Witness)`, kind: "MCP server", vendor: "proxied", health: proxy.brokenChains ? "attention" : "healthy" })),
   ...modelIds.map((id, index) => ({ id: `model-${index}`, name: id, kind: "model", vendor: "local runtime", health: "healthy" })),
 ];
 
@@ -85,11 +111,13 @@ const snapshot = {
   inventory,
   sources: [
     { id: "ticketboard", name: "TicketBoard", boundary: "local files · read only", health: tickets.total ? "healthy" : "attention", evidence: tickets.missing ? "Ticket store not configured; nothing was read." : `${tickets.total} Markdown records indexed; product tickets ${tickets.flightRecorder.map((ticket) => ticket.id).join(", ")}.`, freshness: "captured now" },
+    { id: "witness-proxy", name: "Witness proxy sessions", boundary: "local JSONL · hash-chained", health: proxy.brokenChains ? "attention" : proxy.sessions ? "healthy" : "attention", evidence: proxy.sessions ? `${proxy.sessions} session(s), ${proxy.calls} tool calls, latest ${proxy.latest ?? "n/a"}; ${proxy.brokenChains} broken chain(s).` : `No sessions under ${proxy.dir}.`, freshness: proxy.latest ? "last record " + proxy.latest : "never" },
     { id: "vault-rag", name: "vault-rag", boundary: "localhost health · read only", health: vault.ok ? "healthy" : "unreachable", evidence: vault.ok ? "Health endpoint returned an allow-listed ok response." : "Health probe failed; recovery deliberately not attempted.", freshness: "captured now" },
     { id: "stormbreaker", name: "Stormbreaker / ComfyUI", boundary: "Tailscale HTTP · read only", health: stormbreaker.ok ? "healthy" : "unreachable", evidence: stormbreaker.ok ? `Runtime ${stormbreaker.data?.system?.comfyui_version || "unknown"}; ${devices.length} compute device(s).` : stormbreaker.configured === false ? "Not configured; endpoint not probed." : "System-stats endpoint did not respond.", freshness: "captured now" },
   ],
   coverage: [
     { id: "cov-ticketboard", sourceId: "ticketboard", declaredScope: "Local ticket identities, project, status, approval metadata, and counts", status: tickets.missing ? "not_configured" : tickets.total ? "observed" : "confirmed_absent", observed: tickets.total, freshness: now, limitation: "Does not claim agent tool-call telemetry." },
+    { id: "cov-witness-proxy", sourceId: "witness-proxy", declaredScope: "tools/call requests and their outcomes at the MCP stdio boundary, per wrapped server", status: proxy.sessions ? "observed" : "not_configured", observed: proxy.calls, freshness: proxy.latest ?? now, limitation: "Only servers explicitly wrapped with `witness --` are observed; HTTP/SSE transports are not yet supported; principals are declared, not verified." },
     { id: "cov-vault", sourceId: "vault-rag", declaredScope: "Service reachability and health contract", status: vault.ok ? "observed" : "unreachable", observed: vault.ok ? 1 : 0, freshness: now, limitation: "Document bodies and retrieval results are deliberately excluded." },
     { id: "cov-stormbreaker", sourceId: "stormbreaker", declaredScope: "ComfyUI runtime version and compute-device presence", status: stormbreaker.ok ? "observed" : stormbreaker.configured === false ? "not_configured" : "unreachable", observed: devices.length, freshness: now, limitation: "Generation payloads, prompts, and remote control are unsupported." },
     { id: "cov-models", sourceId: "local-models", declaredScope: "Unauthenticated local model identifiers", status: localModels.ok ? (modelIds.length ? "observed" : "confirmed_absent") : "not_configured", observed: modelIds.length, freshness: now, limitation: "Authenticated endpoints require a reviewed credential adapter; credentials are never inferred." },
