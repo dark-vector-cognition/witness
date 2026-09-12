@@ -113,3 +113,29 @@ test("a recorder that cannot write never breaks the relay", async () => {
   assert.match(s.stderr, /recording disabled/);
   assert.equal(s.code, 0);
 });
+
+test("server that exits mid-stream: relay stays up, open calls close as unknown, exit code propagates", async () => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "witness-epipe-"));
+  // A server that answers initialize then exits with code 3 while the client keeps writing.
+  const dying = path.join(home, "dying.mjs");
+  await (await import("node:fs/promises")).writeFile(dying, `import readline from "node:readline"; const rl = readline.createInterface({ input: process.stdin }); rl.on("line", (l) => { const m = JSON.parse(l); if (m.method === "initialize") { process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: m.id, result: { serverInfo: { name: "dying" } } }) + "\\n"); setTimeout(() => process.exit(3), 50); } });`);
+  const proc = spawn(process.execPath, [bin, "--name", "dying", "--", process.execPath, dying], { env: { ...process.env, WITNESS_HOME: home }, stdio: ["pipe", "pipe", "pipe"] });
+  let stderr = ""; proc.stderr.on("data", (c) => { stderr += c; });
+  proc.stdin.on("error", () => {}); // the test keeps writing after the proxy has (correctly) exited
+  const exited = new Promise((resolve) => proc.on("exit", resolve));
+  proc.stdin.write(`${JSON.stringify(frames[0])}\n`);
+  proc.stdin.write(`${JSON.stringify(frames[3])}\n`);
+  await new Promise((r) => setTimeout(r, 300));
+  for (let i = 0; i < 50; i += 1) { try { proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 100 + i, method: "tools/call", params: { name: "echo", arguments: {} } })}\n`); } catch { /* proxy gone */ } }
+  await new Promise((r) => setTimeout(r, 200));
+  try { proc.stdin.end(); } catch { /* proxy gone */ }
+  const code = await exited;
+  assert.equal(code, 3, "server exit code propagates");
+  assert.doesNotMatch(stderr, /EPIPE|Unhandled|ERR_STREAM/, "no crash trace");
+  const file = path.join(home, "log", (await readdir(path.join(home, "log")))[0]);
+  const records = (await readFile(file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+  assert.equal(verifyChain(records).ok, true);
+  assert.equal(records.at(-1).event, "session_end");
+  assert.deepEqual(records.at(-1).exit, { code: 3, signal: null });
+  await rm(home, { recursive: true, force: true });
+});

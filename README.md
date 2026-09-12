@@ -29,16 +29,23 @@ git clone https://github.com/dark-vector-cognition/witness && cd witness && npm 
 # wrap any stdio MCP server — in .mcp.json / claude_desktop_config.json / Cursor's mcp.json:
 #   "github": { "command": "node", "args": ["/path/to/witness/bin/witness.mjs", "--as", "you@company", "--",
 #                                           "npx", "-y", "@modelcontextprotocol/server-github"] }
+node bin/witness.mjs wrap --as you@company   # or: wrap path/to/.mcp.json — rewrites the entries, keeps a .witness-bak
 node bin/witness.mjs tail        # live: every tool call, its outcome, its latency
 node bin/witness.mjs verify      # walk every chain; exit 1 on the first broken link
-node bin/witness.mjs sessions    # what has been recorded
+node bin/witness.mjs report      # markdown digest of the last 7 days — the thing you show your lead
+node bin/witness.mjs query --tool read_file --status error --since 24h
+node bin/witness.mjs anchor --git   # commit every chain head to a git repo in ~/.witness (third-party clock)
+node bin/witness.mjs unwrap      # put the config back
 ```
+
+`wrap` auto-detects `.mcp.json` (Claude Code project), `~/.claude.json`, `~/.cursor/mcp.json`, and Claude Desktop. Tested end-to-end against a third-party server (desktop-commander 0.2.50, 26 tools): transparent relay, correct ok/error classification, hashed arguments, verified chain.
 
 Every frame passes through untouched. If Witness cannot write its log, it says so on stderr and keeps relaying — breakage can cost records, never uptime. Records live in `~/.witness/log/<session>.jsonl` (`WITNESS_HOME` to move them). The format is documented in [SPEC.md](SPEC.md) and is implementable without this code.
 
 ## Real today (v0.2)
 
 - **MCP stdio proxy.** `witness -- <server command>` relays JSON-RPC between any harness (Claude Code, Cursor, Claude Desktop, Cowork) and any stdio MCP server, recording `session_start`, the client identity from `initialize`, every `tools/call` with a SHA-256 of its arguments, every result with status (`ok` / `error` / `unknown` if the server never answered), latency, and `session_end` with counts. Non-JSON lines pass through and are recorded as `raw`. Tested against a fake server for byte-for-byte transparency, outcome classification, secret exclusion, chain verification, tamper detection, and recorder-failure isolation.
+- **`wrap` / `unwrap`, `query`, `report`, `anchor`.** Config rewriting with a backup and dry-run; joined call rows filterable by tool, server, principal, status, time; a markdown digest with error rate and p50/p95 latency per tool; chain heads checkpointed into a chain of their own and optionally git-committed.
 - **Declared principal.** `--as you@company` (or `WITNESS_AS`) labels every call. The record says `verified: false`, because it is. Proven identity is the org-boundary product, not a v0.2 claim.
 
 - **Append-only evidence ledger.** Every collection and control event is a JSONL record, SHA-256 chained to the previous one. `npm run verify:ledger` re-walks the whole chain; a 41-event chain has been verified end-to-end.
@@ -56,12 +63,11 @@ Every frame passes through untouched. If Witness cannot write its log, it says s
 
 These are the gaps between v0.2 and the full Flight Check promise, in the order we are closing them:
 
-1. **`witness wrap` / `unwrap`** — rewrite the harness config files for you (today the config edit is by hand), plus `query` and `report` (the weekly digest).
-2. **HTTP / SSE transport** for remote MCP servers; today only stdio is proxied.
-3. **Chain anchoring** — commit chain heads to git or a timestamp authority so the record gains a third-party clock.
-4. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
-5. **Verified principals and device-backed operator identity** to replace declared labels in records and approval receipts.
-6. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
+1. **HTTP / SSE transport** for remote MCP servers; today only stdio is proxied.
+2. **External timestamping** of anchored chain heads (today: your own git repo is the clock).
+3. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
+4. **Verified principals and device-backed operator identity** to replace declared labels in records and approval receipts.
+5. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
 
 The full truth ledger — real, simulated, deferred, and commercially risky — is kept current in [docs/STATUS.md](docs/STATUS.md).
 

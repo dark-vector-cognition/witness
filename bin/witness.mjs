@@ -6,7 +6,10 @@
 //   witness sessions
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { runProxy } from "../lib/proxy.mjs";
+import { candidateConfigs, rewriteConfig } from "../lib/wrap.mjs";
 import { verifyChain } from "../lib/record.mjs";
 import { listSessionFiles, logDir, readRecords } from "../lib/session-log.mjs";
 
@@ -17,9 +20,15 @@ function usage(code = 0) {
 
   witness [--as <principal>] [--name <server>] [--allow k1,k2] -- <command> [args...]
       Run <command> as an MCP stdio server behind a transparent recorder.
+  witness wrap [config] [--as p] [--dry-run] [--node /path/node] [--bin /path/witness.mjs]
+                                Rewrite MCP config entries to run through Witness (keeps a .witness-bak).
+  witness unwrap [config]                      Reverse it.
   witness verify [file|dir]     Walk hash chains; report the first broken link. Exit 1 on failure.
   witness tail [--all]          Follow the newest session (or all) as human-readable lines.
   witness sessions              List recorded sessions.
+  witness query [--tool t] [--server s] [--as p] [--status ok|error|unknown|open] [--since 24h] [--json]
+  witness report [--since 7d]   Markdown digest: calls by tool/server/principal, error rate, latency, integrity.
+  witness anchor [--git]        Append every chain head to checkpoints.jsonl (chained); --git commits it in WITNESS_HOME.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -41,6 +50,57 @@ function fmt(record) {
 }
 
 if (argv.length === 0 || argv[0] === "-h" || argv[0] === "--help") usage(0);
+
+function opt(name, fallback = null) { const i = argv.indexOf(name); return i !== -1 && argv[i + 1] !== undefined ? argv[i + 1] : fallback; }
+
+if (argv[0] === "wrap" || argv[0] === "unwrap") {
+  const mode = argv[0];
+  const optValues = new Set([opt("--as"), opt("--node"), opt("--bin")].filter(Boolean));
+  const explicit = argv.slice(1).find((a) => !a.startsWith("--") && !optValues.has(a));
+  const principal = opt("--as", process.env.WITNESS_AS || null);
+  const dryRun = argv.includes("--dry-run");
+  const targets = explicit ? [{ harness: "config", file: path.resolve(explicit), key: "mcpServers" }] : candidateConfigs();
+  if (targets.length === 0) { process.stdout.write("no MCP config found (looked for .mcp.json, ~/.claude.json, ~/.cursor/mcp.json, Claude Desktop). Pass a path.\n"); process.exit(1); }
+  let touched = 0;
+  for (const target of targets) {
+    let result;
+    try { result = rewriteConfig(target.file, { mode, principal, key: target.key, dryRun, node: opt("--node") || undefined, bin: opt("--bin") || undefined }); } catch (error) { process.stdout.write(`SKIP ${target.harness}: ${error.message}\n`); continue; }
+    if (result.note) { process.stdout.write(`SKIP ${target.harness}: ${result.note}\n`); continue; }
+    const verb = mode === "wrap" ? "wrapped" : "unwrapped";
+    process.stdout.write(`${dryRun ? "DRY " : ""}${target.harness} ${target.file}\n  ${result.changes.length ? `${verb}: ${result.changes.join(", ")}` : `nothing to ${mode}`}${result.skipped.length ? `\n  skipped: ${result.skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}` : ""}\n`);
+    touched += result.changes.length;
+  }
+  if (mode === "wrap" && touched && !dryRun) process.stdout.write(`\nRestart the harness. Then: witness tail\n`);
+  process.exit(0);
+}
+
+if (argv[0] === "query") {
+  const rows = queryCalls({ tool: opt("--tool"), server: opt("--server"), as: opt("--as"), status: opt("--status"), since: opt("--since") });
+  if (argv.includes("--json")) { for (const r of rows) process.stdout.write(`${JSON.stringify(r)}\n`); process.exit(0); }
+  process.stdout.write(`${rows.length} call(s)\n`);
+  for (const r of rows) process.stdout.write(`${r.ts}  ${r.server.padEnd(14)} ${r.tool.padEnd(28)} ${(r.status === "ok" ? "✓" : r.status === "error" ? "✗" : "?")} ${String(r.ms ?? "—").padStart(6)}ms  as ${r.principal ?? "—"}${r.summary ? "  " + JSON.stringify(r.summary) : ""}\n`);
+  process.exit(0);
+}
+
+if (argv[0] === "report") {
+  process.stdout.write(`${buildReport({ since: opt("--since", "7d") })}\n`);
+  process.exit(0);
+}
+
+if (argv[0] === "anchor") {
+  const result = anchor();
+  if (!result.ok) { process.stdout.write(`FAIL ${result.reason}\n`); process.exit(1); }
+  process.stdout.write(`${result.appended} checkpoint(s) appended (${result.total} total) → ${result.file}\n`);
+  if (argv.includes("--git")) {
+    const home = path.dirname(result.file);
+    const git = (...a) => spawnSync("git", ["-C", home, ...a], { encoding: "utf8" });
+    if (git("rev-parse", "--is-inside-work-tree").status !== 0) git("init", "-q");
+    git("add", "checkpoints.jsonl");
+    const commit = git("commit", "-q", "-m", `witness anchor ${new Date().toISOString()}`);
+    process.stdout.write(commit.status === 0 ? `committed in ${home}\n` : `nothing new to commit\n`);
+  }
+  process.exit(0);
+}
 
 if (argv[0] === "verify") {
   const target = argv[1] ? path.resolve(argv[1]) : logDir();
