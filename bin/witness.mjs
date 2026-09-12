@@ -120,13 +120,19 @@ if (argv[0] === "verify") {
   let files;
   try { files = target.endsWith(".jsonl") ? [target] : listSessionFiles(target); } catch { files = []; }
   if (files.length === 0) { process.stdout.write(`no sessions found under ${target}\n`); process.exit(0); }
-  let failed = 0;
+  let failed = 0; let chains = 0;
   for (const file of files) {
-    const result = verifyChain(readRecords(file));
-    process.stdout.write(`${result.ok ? "OK  " : "FAIL"} ${path.basename(file)}  ${result.count} records${result.ok ? "" : ` — ${result.reason}`}\n`);
-    if (!result.ok) failed += 1;
+    // A file may hold one session or a concatenated export of several; each session is its own chain.
+    const bySession = new Map();
+    for (const record of readRecords(file)) { const key = record.session ?? "?"; if (!bySession.has(key)) bySession.set(key, []); bySession.get(key).push(record); }
+    for (const [session, records] of bySession) {
+      const result = verifyChain(records); chains += 1;
+      const label = bySession.size > 1 ? `${path.basename(file)} ${session}` : path.basename(file);
+      process.stdout.write(`${result.ok ? "OK  " : "FAIL"} ${label}  ${result.count} records${result.ok ? "" : ` — ${result.reason}`}\n`);
+      if (!result.ok) failed += 1;
+    }
   }
-  process.stdout.write(`${files.length - failed}/${files.length} chains verified\n`);
+  process.stdout.write(`${chains - failed}/${chains} chains verified\n`);
   process.exit(failed ? 1 : 0);
 }
 
