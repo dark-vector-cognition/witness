@@ -5,7 +5,7 @@ import path from "node:path";
 import { appendLedgerEvents, readLedger, verifyLedger } from "./lib/ledger.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
-const ticketRoot = process.env.TICKET_STORE_ROOT || "/Users/alsharma/Projects/experience-layering-main/ticket_store";
+const ticketRoot = process.env.TICKET_STORE_ROOT || path.join(os.homedir(), "Projects", "experience-layering-main", "ticket_store");
 const ledgerPath = path.join(root, "data", "ledger", "events.jsonl");
 const outputPath = path.join(root, "public", "data", "latest.json");
 const now = new Date().toISOString();
