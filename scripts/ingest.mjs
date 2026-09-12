@@ -29,7 +29,14 @@ function safeObject(value) {
 
 async function readTicketMeta() {
   const dir = path.join(ticketRoot, "tickets", "LOCAL");
-  const files = (await readdir(dir)).filter((file) => /^LOCAL-\d+\.md$/.test(file));
+  let files;
+  try {
+    files = (await readdir(dir)).filter((file) => /^LOCAL-\d+\.md$/.test(file));
+  } catch (error) {
+    // A missing store is a coverage fact, not a crash: declare it as not configured.
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "ERR";
+    return { total: 0, flightRecorder: [], path: dir, missing: true, reason: code };
+  }
   const records = [];
   for (const file of files) {
     const text = await readFile(path.join(dir, file), "utf8");
@@ -41,21 +48,23 @@ async function readTicketMeta() {
   return { total: records.length, flightRecorder, path: dir };
 }
 
+const stormbreakerUrl = process.env.STORMBREAKER_STATS_URL || "";
 const [tickets, vault, stormbreaker, localModels] = await Promise.all([
   readTicketMeta(),
-  probe("http://127.0.0.1:8742/health"),
-  probe("http://100.112.51.100:8188/system_stats", 3500),
-  probe("http://127.0.0.1:1234/v1/models"),
+  probe(process.env.VAULT_RAG_HEALTH_URL || "http://127.0.0.1:8742/health"),
+  stormbreakerUrl ? probe(stormbreakerUrl, 3500) : Promise.resolve({ ok: false, configured: false, error: "not configured" }),
+  probe(process.env.LOCAL_MODELS_URL || "http://127.0.0.1:1234/v1/models"),
 ]);
 
 const devices = stormbreaker.ok && Array.isArray(stormbreaker.data?.devices) ? stormbreaker.data.devices : [];
 const modelIds = localModels.ok && Array.isArray(localModels.data?.data) ? localModels.data.data.map((model) => String(model.id)).slice(0, 8) : [];
 const captureEvents = [
-  { id: randomUUID(), at: now, source: "ticketboard", title: "Ticket inventory captured", summary: `${tickets.total} local ticket records observed; ${tickets.flightRecorder.length} govern this product.`, outcome: "success", evidenceId: `TB-${tickets.total}` },
+  { id: randomUUID(), at: now, source: "ticketboard", title: tickets.missing ? "Ticket store not configured" : "Ticket inventory captured", summary: tickets.missing ? `No ticket store at the configured path (${tickets.reason}); set TICKET_STORE_ROOT to observe one.` : `${tickets.total} local ticket records observed; ${tickets.flightRecorder.length} govern this product.`, outcome: tickets.missing ? "attention" : "success", evidenceId: `TB-${tickets.missing ? "UNCONFIGURED" : tickets.total}` },
   { id: randomUUID(), at: now, source: "vault-rag", title: vault.ok ? "Knowledge runtime responded" : "Knowledge runtime probe failed", summary: vault.ok ? "The read-only health endpoint returned status ok." : "The failed probe is retained; no restart was attempted.", outcome: vault.ok ? "success" : "attention", evidenceId: `VR-${vault.status || "ERR"}` },
-  { id: randomUUID(), at: now, source: "prometheus-stormbreaker", title: stormbreaker.ok ? "Stormbreaker runtime observed" : "Stormbreaker runtime unreachable", summary: stormbreaker.ok ? `ComfyUI ${stormbreaker.data?.system?.comfyui_version || "version unknown"} responded with ${devices.length} compute device record(s).` : "The safe system-stats probe failed; no control operation was attempted.", outcome: stormbreaker.ok ? "success" : "failed", evidenceId: `SB-${stormbreaker.status || "ERR"}` },
+  { id: randomUUID(), at: now, source: "prometheus-stormbreaker", title: stormbreaker.ok ? "Stormbreaker runtime observed" : stormbreaker.configured === false ? "Stormbreaker runtime not configured" : "Stormbreaker runtime unreachable", summary: stormbreaker.ok ? `ComfyUI ${stormbreaker.data?.system?.comfyui_version || "version unknown"} responded with ${devices.length} compute device record(s).` : stormbreaker.configured === false ? "No STORMBREAKER_STATS_URL set; the runtime was not probed." : "The safe system-stats probe failed; no control operation was attempted.", outcome: stormbreaker.ok ? "success" : stormbreaker.configured === false ? "attention" : "failed", evidenceId: `SB-${stormbreaker.status || "ERR"}` },
   { id: randomUUID(), at: now, source: "recorder", title: "Secret boundary enforced", summary: "Only allow-listed status and inventory fields were retained. Authentication material and response bodies are excluded.", outcome: "success", evidenceId: "POL-REDACT-01" },
 ];
+await mkdir(path.dirname(ledgerPath), { recursive: true });
 await appendLedgerEvents(ledgerPath, captureEvents);
 const allLines = await readLedger(ledgerPath);
 const tail = allLines.slice(-10).reverse();
@@ -75,14 +84,14 @@ const snapshot = {
   counts: { agents: inventory.filter((item) => item.kind === "agent").length, models: inventory.filter((item) => item.kind === "model").length, mcpServers: inventory.filter((item) => item.kind === "MCP server").length },
   inventory,
   sources: [
-    { id: "ticketboard", name: "TicketBoard", boundary: "local files · read only", health: tickets.total ? "healthy" : "attention", evidence: `${tickets.total} Markdown records indexed; product tickets ${tickets.flightRecorder.map((ticket) => ticket.id).join(", ")}.`, freshness: "captured now" },
+    { id: "ticketboard", name: "TicketBoard", boundary: "local files · read only", health: tickets.total ? "healthy" : "attention", evidence: tickets.missing ? "Ticket store not configured; nothing was read." : `${tickets.total} Markdown records indexed; product tickets ${tickets.flightRecorder.map((ticket) => ticket.id).join(", ")}.`, freshness: "captured now" },
     { id: "vault-rag", name: "vault-rag", boundary: "localhost health · read only", health: vault.ok ? "healthy" : "unreachable", evidence: vault.ok ? "Health endpoint returned an allow-listed ok response." : "Health probe failed; recovery deliberately not attempted.", freshness: "captured now" },
-    { id: "stormbreaker", name: "Stormbreaker / ComfyUI", boundary: "Tailscale HTTP · read only", health: stormbreaker.ok ? "healthy" : "unreachable", evidence: stormbreaker.ok ? `Runtime ${stormbreaker.data?.system?.comfyui_version || "unknown"}; ${devices.length} compute device(s).` : "System-stats endpoint did not respond.", freshness: "captured now" },
+    { id: "stormbreaker", name: "Stormbreaker / ComfyUI", boundary: "Tailscale HTTP · read only", health: stormbreaker.ok ? "healthy" : "unreachable", evidence: stormbreaker.ok ? `Runtime ${stormbreaker.data?.system?.comfyui_version || "unknown"}; ${devices.length} compute device(s).` : stormbreaker.configured === false ? "Not configured; endpoint not probed." : "System-stats endpoint did not respond.", freshness: "captured now" },
   ],
   coverage: [
-    { id: "cov-ticketboard", sourceId: "ticketboard", declaredScope: "Local ticket identities, project, status, approval metadata, and counts", status: tickets.total ? "observed" : "confirmed_absent", observed: tickets.total, freshness: now, limitation: "Does not claim agent tool-call telemetry." },
+    { id: "cov-ticketboard", sourceId: "ticketboard", declaredScope: "Local ticket identities, project, status, approval metadata, and counts", status: tickets.missing ? "not_configured" : tickets.total ? "observed" : "confirmed_absent", observed: tickets.total, freshness: now, limitation: "Does not claim agent tool-call telemetry." },
     { id: "cov-vault", sourceId: "vault-rag", declaredScope: "Service reachability and health contract", status: vault.ok ? "observed" : "unreachable", observed: vault.ok ? 1 : 0, freshness: now, limitation: "Document bodies and retrieval results are deliberately excluded." },
-    { id: "cov-stormbreaker", sourceId: "stormbreaker", declaredScope: "ComfyUI runtime version and compute-device presence", status: stormbreaker.ok ? "observed" : "unreachable", observed: devices.length, freshness: now, limitation: "Generation payloads, prompts, and remote control are unsupported." },
+    { id: "cov-stormbreaker", sourceId: "stormbreaker", declaredScope: "ComfyUI runtime version and compute-device presence", status: stormbreaker.ok ? "observed" : stormbreaker.configured === false ? "not_configured" : "unreachable", observed: devices.length, freshness: now, limitation: "Generation payloads, prompts, and remote control are unsupported." },
     { id: "cov-models", sourceId: "local-models", declaredScope: "Unauthenticated local model identifiers", status: localModels.ok ? (modelIds.length ? "observed" : "confirmed_absent") : "not_configured", observed: modelIds.length, freshness: now, limitation: "Authenticated endpoints require a reviewed credential adapter; credentials are never inferred." },
   ],
   events: tail.map(({ id, at, source, title, summary, outcome, evidenceId }) => ({ id, at, source, title, summary, outcome, evidenceId })),

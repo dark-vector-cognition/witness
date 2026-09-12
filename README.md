@@ -60,7 +60,16 @@ npm test             # ingest + ledger verification + production build + rendere
 
 On macOS, `Launch Flight Recorder.command` does the same by double-click.
 
-The reference ticket-store adapter reads from `TICKET_STORE_ROOT` (defaults to `~/Projects/experience-layering-main/ticket_store`); point it at your own store or leave it unconfigured — the coverage manifest will say so rather than fail silently.
+The reference adapters are configured by environment variable and degrade to a declared coverage status when unset — never a crash:
+
+| Variable | Adapter | When unset |
+|---|---|---|
+| `TICKET_STORE_ROOT` | Markdown ticket store | `not_configured` |
+| `VAULT_RAG_HEALTH_URL` | localhost retrieval service (default `http://127.0.0.1:8742/health`) | probed; `unreachable` if absent |
+| `STORMBREAKER_STATS_URL` | read-only ComfyUI `system_stats` on a private network | `not_configured` (not probed) |
+| `LOCAL_MODELS_URL` | unauthenticated local model list (default `http://127.0.0.1:1234/v1/models`) | probed; `not_configured` if absent |
+
+A fresh clone with nothing configured still ingests, verifies its chain, builds, and passes `npm test`.
 
 ## What it never does
 
