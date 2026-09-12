@@ -2,7 +2,7 @@ import snapshot from "../public/data/latest.json";
 import { ControlContracts } from "./control-contracts";
 
 export const metadata = {
-  title: "DVC Agent Flight Recorder",
+  title: "Witness — DVC Agent Flight Recorder",
   description: "Local-first evidence and control plane for AI agent operations.",
 };
 
@@ -30,7 +30,7 @@ export default function Home() {
           <div className="mark" aria-hidden="true"><span>FR</span></div>
           <div>
             <p className="eyebrow">Dark Vector Cognition</p>
-            <h1>Agent Flight Recorder</h1>
+            <h1>Witness</h1>
           </div>
         </div>
         <div className="system-state">
@@ -127,7 +127,7 @@ export default function Home() {
           </section>
 
           <ControlContracts contracts={snapshot.controlContracts} />
-          <footer><span>DVC Agent Flight Recorder · MVP 0.2.0</span><span>Loopback control · local evidence · secrets excluded</span></footer>
+          <footer><span>Witness · DVC Agent Flight Recorder · v0.2.0</span><span>Loopback control · local evidence · secrets excluded</span></footer>
         </section>
       </div>
     </main>

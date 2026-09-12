@@ -13,6 +13,7 @@ test("renders the operator evidence surface", async () => {
   const response = await render();
   assert.equal(response.status, 200);
   const html = await response.text();
+  assert.match(html, /Witness/);
   assert.match(html, /Agent Flight Recorder/);
   assert.match(html, /Mission timeline/);
   assert.match(html, /Permission &amp; approval matrix/);

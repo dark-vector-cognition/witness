@@ -1,6 +1,13 @@
 {
-  "name": "dvc-agent-flight-recorder",
+  "name": "witness",
   "version": "0.2.0",
+  "description": "Witness \u2014 the DVC agent flight recorder: a local-first, tamper-evident record of what your AI agents exist, can touch, and did.",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dark-vector-cognition/witness.git"
+  },
+  "homepage": "https://darkvectorcognition.ai/flight-check/",
   "private": true,
   "engines": {
     "node": ">=22.13.0"

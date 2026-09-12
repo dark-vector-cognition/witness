@@ -6,7 +6,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "DVC Agent Flight Recorder",
+  title: "Witness — DVC Agent Flight Recorder",
   description: "A local-first, cross-vendor evidence and control plane for AI agent operations.",
 };
 

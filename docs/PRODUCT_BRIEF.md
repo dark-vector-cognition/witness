@@ -10,7 +10,7 @@ Agent estates are already fragmented across model providers, desktop copilots, M
 
 ## Promise
 
-DVC Agent Flight Recorder provides one local-first operational record of what agent infrastructure exists, what it can reach, who approved it, what happened, whether it completed, and which machine evidence supports that verdict. Observation is safe by default. Control is explicit, permissioned, and independently auditable.
+Witness (the DVC Agent Flight Recorder) provides one local-first operational record of what agent infrastructure exists, what it can reach, who approved it, what happened, whether it completed, and which machine evidence supports that verdict. Observation is safe by default. Control is explicit, permissioned, and independently auditable.
 
 ## Competitive wedge
 

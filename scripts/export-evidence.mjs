@@ -15,7 +15,7 @@ export async function buildEvidenceExport({ root = path.resolve(import.meta.dirn
   const receipts = await readJsonl(path.join(root, "data", "control", "receipts.jsonl"));
   const generatedAt = new Date().toISOString();
   const bundle = {
-    format: "dvc-agent-flight-recorder-evidence",
+    format: "witness-evidence",
     version: "0.2.0",
     generatedAt,
     handling: "Operator-created local export. Review infrastructure names and operator identity before sharing.",
