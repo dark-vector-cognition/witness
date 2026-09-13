@@ -1,12 +1,12 @@
 {
-  "name": "@darkvector/witness",
+  "name": "@darkvectorcognition.ai/witness",
   "version": "0.3.0",
   "description": "Witness — a transparent MCP proxy that writes a tamper-evident, hash-chained record of what your AI agents actually did at the tool boundary. Local-first, zero dependencies.",
   "license": "Apache-2.0",
   "author": "Dark Vector Cognition LLC <hello@darkvectorcognition.ai>",
   "repository": {
     "type": "git",
-    "url": "https://github.com/dark-vector-cognition/witness.git"
+    "url": "git+https://github.com/dark-vector-cognition/witness.git"
   },
   "homepage": "https://github.com/dark-vector-cognition/witness#readme",
   "bugs": "https://github.com/dark-vector-cognition/witness/issues",

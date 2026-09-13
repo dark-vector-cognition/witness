@@ -9,11 +9,11 @@ Witness sits between any MCP client (Claude Code, Claude Desktop, Cursor, Cowork
 ## 60-second start
 
 ```bash
-npx @darkvector/witness wrap --as you@company   # rewrites your MCP config; keeps a .witness-bak
+npx @darkvectorcognition.ai/witness wrap --as you@company   # rewrites your MCP config; keeps a .witness-bak
 # restart the harness, use it normally, then:
-npx @darkvector/witness tail      # live: every tool call, its outcome, its latency
-npx @darkvector/witness verify    # walk every chain; exit 1 on the first broken link
-npx @darkvector/witness report    # markdown digest of the last 7 days
+npx @darkvectorcognition.ai/witness tail      # live: every tool call, its outcome, its latency
+npx @darkvectorcognition.ai/witness verify    # walk every chain; exit 1 on the first broken link
+npx @darkvectorcognition.ai/witness report    # markdown digest of the last 7 days
 ```
 
 Or wrap one server by hand, in `.mcp.json` / `claude_desktop_config.json` / Cursor's `mcp.json`:
@@ -21,7 +21,7 @@ Or wrap one server by hand, in `.mcp.json` / `claude_desktop_config.json` / Curs
 ```json
 "github": {
   "command": "npx",
-  "args": ["-y", "@darkvector/witness", "--as", "you@company", "--",
+  "args": ["-y", "@darkvectorcognition.ai/witness", "--as", "you@company", "--",
            "npx", "-y", "@modelcontextprotocol/server-github"]
 }
 ```
@@ -29,7 +29,7 @@ Or wrap one server by hand, in `.mcp.json` / `claude_desktop_config.json` / Curs
 For a remote (Streamable HTTP or SSE) server:
 
 ```bash
-npx @darkvector/witness http --upstream https://mcp.example.com/mcp --as you@company
+npx @darkvectorcognition.ai/witness http --upstream https://mcp.example.com/mcp --as you@company
 # prints a 127.0.0.1 address — point the config's "url" at it
 ```
 
@@ -63,9 +63,9 @@ No proven identity, no signing key, no external timestamp, no enforcement, no in
 ## Using it as a library
 
 ```js
-import { verifyChain, sealRecord, canonical } from "@darkvector/witness";
-import { readRecords, listSessionFiles } from "@darkvector/witness/session-log";
-import { loadCalls, buildReport } from "@darkvector/witness/analyze";
+import { verifyChain, sealRecord, canonical } from "@darkvectorcognition.ai/witness";
+import { readRecords, listSessionFiles } from "@darkvectorcognition.ai/witness/session-log";
+import { loadCalls, buildReport } from "@darkvectorcognition.ai/witness/analyze";
 ```
 
 ## What it never does

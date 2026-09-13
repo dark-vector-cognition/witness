@@ -25,7 +25,7 @@ function usage(code = 0) {
       Local reverse proxy for a remote MCP server (Streamable HTTP or SSE). Prints the address to point your harness at.
   witness wrap [config] [--as p] [--dry-run] [--via npx|path] [--node /path/node] [--bin /path/witness.mjs]
                                 Rewrite MCP config entries to run through Witness (keeps a .witness-bak).
-                                --via npx writes "npx -y @darkvector/witness@<ver>"; --via path writes "node <bin>". Default matches this install.
+                                --via npx writes "npx -y @darkvectorcognition.ai/witness@<ver>"; --via path writes "node <bin>". Default matches this install.
   witness unwrap [config]                      Reverse it.
   witness verify [file|dir]     Walk hash chains; report the first broken link. Exit 1 on failure.
   witness tail [--all]          Follow the newest session (or all) as human-readable lines.

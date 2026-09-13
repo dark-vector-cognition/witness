@@ -65,7 +65,7 @@ test("wrap via npx invokes the package by pinned name, is detected as wrapped, a
   assert.ok(isWrapped(entry));
   assert.equal(wrapEntry("gh", entry, { via: "npx" }).changed, false, "idempotent");
   assert.deepEqual(unwrapEntry(entry).entry, { command: "npx", args: ["-y", "srv"] });
-  assert.equal(installedFromRegistry("/home/u/.npm/_npx/abc/node_modules/@darkvector/witness/bin/witness.mjs"), true);
+  assert.equal(installedFromRegistry("/home/u/.npm/_npx/abc/node_modules/@darkvectorcognition.ai/witness/bin/witness.mjs"), true);
   assert.equal(installedFromRegistry("/home/u/src/witness/bin/witness.mjs"), false);
 });
 
