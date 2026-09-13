@@ -1,25 +1,31 @@
 # Privacy and data handling
 
-The MVP is local-only. It has no product telemetry, hosted account, cloud database, or background upload. Collection reads ticket metadata plus allow-listed health and inventory fields from known local endpoints.
+Witness is local-only. It has no product telemetry, hosted account, cloud database, or background upload. Its only output is the per-session log under `WITNESS_HOME` (default `~/.witness`) and, when you run `anchor`, a checkpoints file beside it.
 
-## Never collected
+## Never recorded
 
-- API keys, bearer tokens, cookies, passwords, authorization headers, or credential values
-- prompt bodies, retrieved document bodies, customer records, or generated media
-- full source responses when a small status summary is sufficient
+- tool-call arguments or tool results in plaintext (only their SHA-256 and byte length)
+- API keys, bearer tokens, cookies, passwords, authorization headers, or any value under a key matching `token | secret | password | authorization | cookie | api_key | credential`, even when that key is explicitly allow-listed
+- HTTP headers, in either direction
+- prompt bodies, model responses, retrieved documents, or anything that is not a JSON-RPC frame at the MCP boundary
+- server `stderr` (passed through, never written)
 - environment-variable values
 
-The collector rejects secret-bearing key names recursively and writes the ledger with user-only filesystem permissions. Sample data is synthetic and must not be generated from private customer records.
+## Recorded, per session
 
-## Collected in this slice
+- session id, start and end timestamps, exit code or signal, counts
+- the MCP client's name, version, and protocol version, as it declared them in `initialize`
+- the server's name (or command basename) and a SHA-256 of its full command line or upstream origin
+- the declared principal (`--as` / `WITNESS_AS`) and how it was supplied
+- for every `tools/call`: the tool name, the JSON-RPC id, `args_sha256`, `args_bytes`, and — only for keys you pass with `--allow` — a summary of those values truncated to 120 characters
+- for every result: status, latency, `result_sha256`, `result_bytes`, and the JSON-RPC error code if any
+- for every notification: its method name
+- for every non-JSON line: direction, byte length, and a SHA-256
 
-- component names and types
-- local ticket ids, statuses, and counts for this product
-- endpoint reachability and allow-listed runtime versions/device counts
-- source timestamps, failure summaries, evidence ids, and hash-chain values
-- policy posture and registry-backed approval references
-- local operator identity plus approval reason, expiry, target id, policy result, and control receipt
+## What can still be sensitive
 
-Raw single-use approval nonces exist only in client memory long enough to execute the approved request. Only a SHA-256 nonce hash is persisted. The control service binds to `127.0.0.1`, rejects non-local browser origins, limits request bodies, and never accepts an arbitrary PID, command, executable, or path.
+Tool names, server names, principals, hostnames in the command-line digest, call timing, and payload sizes are metadata, and metadata can be sensitive. Treat the log directory as confidential; it is created `0700` with `0600` files for that reason. Review a `report` or an exported log before sharing it outside the machine it was written on.
 
-Infrastructure names and model identifiers may still be sensitive. Enterprise deployments need configurable pseudonymization, retention, access controls, export/delete policy, and customer-managed encryption before production use.
+## Retention
+
+Witness never deletes or rotates its own records. Retention is the operator's decision; deleting a session file removes that session's chain and is detectable against a checkpoint if one was anchored.

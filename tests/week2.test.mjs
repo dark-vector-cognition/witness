@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { verifyChain } from "../lib/record.mjs";
-import { isWrapped, rewriteConfig, unwrapEntry, wrapEntry } from "../lib/wrap.mjs";
+import { PACKAGE, installedFromRegistry, isWrapped, rewriteConfig, unwrapEntry, wrapEntry } from "../lib/wrap.mjs";
 
 const bin = new URL("../bin/witness.mjs", import.meta.url).pathname;
 const fake = new URL("./fixtures/fake-mcp-server.mjs", import.meta.url).pathname;
@@ -19,7 +19,7 @@ function run(args, env = {}) {
   });
 }
 
-async function recordSession(home, { name = "fake", as = "tester@dvc", calls = ["echo", "fail"] } = {}) {
+async function recordSession(home, { name = "fake", as = "tester@example.com", calls = ["echo", "fail"] } = {}) {
   const p = spawn(process.execPath, [bin, "--as", as, "--name", name, "--", process.execPath, fake], { env: { ...process.env, WITNESS_HOME: home }, stdio: ["pipe", "ignore", "ignore"] });
   p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { clientInfo: { name: "t", version: "1" } } })}\n`);
   calls.forEach((tool, i) => p.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 10 + i, method: "tools/call", params: { name: tool, arguments: { i } } })}\n`));
@@ -33,26 +33,40 @@ test("wrap/unwrap round-trip a config, preserve env, keep a backup, and are idem
   const file = path.join(dir, ".mcp.json");
   const original = { mcpServers: { github: { command: "npx", args: ["-y", "@modelcontextprotocol/server-github"], env: { GITHUB_TOKEN: "x" } }, remote: { url: "https://example.com/mcp" } } };
   await writeFile(file, `${JSON.stringify(original, null, 2)}\n`);
-  const dry = rewriteConfig(file, { mode: "wrap", principal: "hank@dvc", dryRun: true });
+  const dry = rewriteConfig(file, { mode: "wrap", principal: "alice@example.com", dryRun: true });
   assert.deepEqual(dry.changes, ["github"]);
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), original, "dry run writes nothing");
-  const wrapped = rewriteConfig(file, { mode: "wrap", principal: "hank@dvc" });
+  const wrapped = rewriteConfig(file, { mode: "wrap", principal: "alice@example.com" });
   assert.deepEqual(wrapped.changes, ["github"]);
   assert.equal(wrapped.skipped[0].name, "remote");
   const after = JSON.parse(await readFile(file, "utf8"));
   assert.equal(after.mcpServers.github.command, process.execPath);
   assert.ok(after.mcpServers.github.args[0].endsWith("bin/witness.mjs"));
-  assert.deepEqual(after.mcpServers.github.args.slice(1), ["--name", "github", "--as", "hank@dvc", "--", "npx", "-y", "@modelcontextprotocol/server-github"]);
+  assert.deepEqual(after.mcpServers.github.args.slice(1), ["--name", "github", "--as", "alice@example.com", "--", "npx", "-y", "@modelcontextprotocol/server-github"]);
   assert.deepEqual(after.mcpServers.github.env, { GITHUB_TOKEN: "x" }, "env block preserved");
   assert.deepEqual(after.mcpServers.remote, original.mcpServers.remote, "url-based servers untouched");
   assert.deepEqual(JSON.parse(await readFile(`${file}.witness-bak`, "utf8")), original);
-  assert.deepEqual(rewriteConfig(file, { mode: "wrap", principal: "hank@dvc" }).changes, [], "second wrap is a no-op");
+  assert.deepEqual(rewriteConfig(file, { mode: "wrap", principal: "alice@example.com" }).changes, [], "second wrap is a no-op");
   assert.ok(isWrapped(after.mcpServers.github));
   const restored = rewriteConfig(file, { mode: "unwrap" });
   assert.deepEqual(restored.changes, ["github"]);
   assert.deepEqual(JSON.parse(await readFile(file, "utf8")), original, "unwrap restores the original exactly");
   assert.deepEqual(unwrapEntry(wrapEntry("x", { command: "c" }).entry).entry, { command: "c" });
   await rm(dir, { recursive: true, force: true });
+});
+
+test("wrap via npx invokes the package by pinned name, is detected as wrapped, and unwraps cleanly", () => {
+  const { entry, changed } = wrapEntry("gh", { command: "npx", args: ["-y", "srv"] }, { principal: "alice@example.com", via: "npx" });
+  assert.equal(changed, true);
+  assert.equal(entry.command, "npx");
+  assert.equal(entry.args[0], "-y");
+  assert.match(entry.args[1], new RegExp(`^${PACKAGE.replace("/", "\\/")}@\\d+\\.\\d+\\.\\d+$`));
+  assert.deepEqual(entry.args.slice(2), ["--name", "gh", "--as", "alice@example.com", "--", "npx", "-y", "srv"]);
+  assert.ok(isWrapped(entry));
+  assert.equal(wrapEntry("gh", entry, { via: "npx" }).changed, false, "idempotent");
+  assert.deepEqual(unwrapEntry(entry).entry, { command: "npx", args: ["-y", "srv"] });
+  assert.equal(installedFromRegistry("/home/u/.npm/_npx/abc/node_modules/@darkvector/witness/bin/witness.mjs"), true);
+  assert.equal(installedFromRegistry("/home/u/src/witness/bin/witness.mjs"), false);
 });
 
 test("query filters joined call rows; report summarises tools, errors, latency, integrity", async () => {

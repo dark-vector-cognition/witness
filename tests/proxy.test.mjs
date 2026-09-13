@@ -21,7 +21,7 @@ const frames = [
 
 async function runSession({ env = {}, extraArgs = [] } = {}) {
   const home = await mkdtemp(path.join(os.tmpdir(), "witness-"));
-  const proc = spawn(process.execPath, [bin, "--as", "tester@dvc", "--name", "fake", "--allow", "repo,api_key", ...extraArgs, "--", process.execPath, fake], { env: { ...process.env, WITNESS_HOME: home, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+  const proc = spawn(process.execPath, [bin, "--as", "tester@example.com", "--name", "fake", "--allow", "repo,api_key", ...extraArgs, "--", process.execPath, fake], { env: { ...process.env, WITNESS_HOME: home, ...env }, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = ""; let stderr = "";
   proc.stdout.on("data", (chunk) => { stdout += chunk; });
   proc.stderr.on("data", (chunk) => { stderr += chunk; });
@@ -51,7 +51,7 @@ test("records session, client identity, tool calls and outcomes; args are hashed
   const s = await runSession();
   const by = (event) => s.records.filter((r) => r.event === event);
   assert.equal(by("session_start").length, 1);
-  assert.equal(by("session_start")[0].principal.as, "tester@dvc");
+  assert.equal(by("session_start")[0].principal.as, "tester@example.com");
   assert.equal(by("session_start")[0].principal.verified, false);
   assert.equal(by("session_client")[0].actor.client, "test-harness");
   const calls = by("tool_call");

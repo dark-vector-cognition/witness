@@ -1,112 +1,97 @@
-# Witness — the DVC Agent Flight Recorder
+# Witness
 
-**A local-first, cross-vendor record of which AI agents exist in your company, what they can touch, and what they actually did — under a declared (not yet verified) principal, with evidence you can hand to an auditor.**
+**A transparent MCP proxy that writes a tamper-evident record of what your AI agents actually did — every tool call, its outcome, its latency — under a declared principal, on your machine, with no dependencies.**
 
-Witness is the instrument behind [Agent Flight Check](https://darkvectorcognition.ai/flight-check/), Dark Vector Cognition's two-week, fixed-price audit of an organisation's agent estate. The recorder is open source under Apache-2.0 and complete for one engineer on one machine. The Flight Check is where an organisation buys the reading of it.
+Witness sits between any MCP client (Claude Code, Claude Desktop, Cursor, Cowork, your own harness) and any MCP server. Frames pass through untouched. On the way past, each `tools/call` and its result are digested into an append-only, SHA-256-chained log you can verify, query, and hand to someone else. Arguments and results are hashed, never stored.
 
-> Status: **v0.2 — working local MVP, now with the MCP proxy recorder.** Everything in the "Real today" section below runs and is tested. Everything under "Next" is not built yet. We would rather you find that out here than after an install.
+> Status: **v0.3 — the recorder, and only the recorder.** Everything in "Real today" runs and is tested. The record format is [SPEC.md](SPEC.md) and is implementable without this code.
+
+## 60-second start
+
+```bash
+npx @darkvector/witness wrap --as you@company   # rewrites your MCP config; keeps a .witness-bak
+# restart the harness, use it normally, then:
+npx @darkvector/witness tail      # live: every tool call, its outcome, its latency
+npx @darkvector/witness verify    # walk every chain; exit 1 on the first broken link
+npx @darkvector/witness report    # markdown digest of the last 7 days
+```
+
+Or wrap one server by hand, in `.mcp.json` / `claude_desktop_config.json` / Cursor's `mcp.json`:
+
+```json
+"github": {
+  "command": "npx",
+  "args": ["-y", "@darkvector/witness", "--as", "you@company", "--",
+           "npx", "-y", "@modelcontextprotocol/server-github"]
+}
+```
+
+For a remote (Streamable HTTP or SSE) server:
+
+```bash
+npx @darkvector/witness http --upstream https://mcp.example.com/mcp --as you@company
+# prints a 127.0.0.1 address — point the config's "url" at it
+```
+
+Records live in `~/.witness/log/<session>.jsonl` (`WITNESS_HOME` to move them). If Witness cannot write its log it says so on stderr and keeps relaying: breakage can cost records, never uptime.
 
 ## Why it exists
 
-Every company now has agents acting on production systems — coding agents, MCP servers, connectors, internal automations — and almost nobody has the list. Observability tools start after the model is called. Identity tools stop before the agent acts. In between sits the question every incident review and every board now asks: *what did the agents do, and can you prove it?*
+Observability tools start after the model is called. Identity tools stop before the agent acts. The question every incident review asks sits in between: *what did the agent do, and can you prove it?* Witness answers the narrowest useful version of that — at the MCP tool boundary, per call, with a chain that detects edits — and refuses to claim more.
 
-Witness answers that question with an evidence chain that links four things most tools keep apart:
+Two rules govern the design:
 
+1. **Absence of evidence is never evidence of absence.** Only servers explicitly wrapped are observed. A call the server never answered is recorded as `unknown`, not omitted. The record says `verified: false` next to the principal, because it is.
+2. **Relay first, record second.** Nothing in the recording path can delay, alter, or drop a frame.
+
+## Real today (v0.3)
+
+- **MCP stdio proxy.** `witness -- <server command>` relays JSON-RPC between any client and any stdio server, recording `session_start`, the client identity from `initialize`, every `tools/call` with a SHA-256 of its arguments, every result with status (`ok` / `error` / `unknown`), latency, and `session_end` with counts. Non-JSON lines pass through and are recorded as `raw`. Tested for byte-for-byte transparency, outcome classification, secret exclusion, chain verification, tamper detection, and recorder-failure isolation.
+- **HTTP / SSE transport.** `witness http --upstream <url>` is a loopback reverse proxy for remote servers. Bodies relay byte-for-byte; `Authorization` passes through and is never recorded; JSON and `text/event-stream` responses are parsed on the way past into the same records; an unreachable upstream answers a JSON-RPC 502 and the call seals as `unknown`.
+- **`wrap` / `unwrap`.** Auto-detects `.mcp.json` (Claude Code project), `~/.claude.json`, `~/.cursor/mcp.json`, and Claude Desktop. Reversible, idempotent, dry-run, backup kept. Remote (`url`) entries are reported with the `http` command to run.
+- **`verify`, `tail`, `sessions`, `query`, `report`.** Walk chains and exit non-zero on the first broken link; follow the newest session live; list sessions; filter joined call rows by tool, server, principal, status, time; a markdown digest with error rate and p50/p95 latency per tool.
+- **`anchor`.** Append every session's chain head to a checkpoints file that is itself chained; `--git` commits it in `WITNESS_HOME` so your repo history is a clock.
+- **Declared principal.** `--as you@company` (or `WITNESS_AS`) labels every call. `verified` is always `false` in this version.
+- **Secret exclusion by construction.** Keys matching `token | secret | password | authorization | cookie | api_key | credential` never appear in a summary, even when allow-listed with `--allow`.
+
+Tested end-to-end against a third-party server (desktop-commander 0.2.50, 26 tools): transparent relay, correct ok/error classification, hashed arguments, verified chain.
+
+## What it does not claim
+
+No proven identity, no signing key, no external timestamp, no enforcement, no inventory of servers you did not wrap. A chain proves *internal* consistency and detects edits after the fact; an administrator with filesystem access can replace both the log and the verifier. [SPEC.md](SPEC.md) states this per field; [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states it per adversary.
+
+## Using it as a library
+
+```js
+import { verifyChain, sealRecord, canonical } from "@darkvector/witness";
+import { readRecords, listSessionFiles } from "@darkvector/witness/session-log";
+import { loadCalls, buildReport } from "@darkvector/witness/analyze";
 ```
-inventory  →  authorization  →  action  →  outcome
-what exists    who approved what   what happened   did it complete, and what proves it
-```
-
-Two rules govern the whole design:
-
-1. **Absence of evidence is never evidence of absence.** Every collector declares a *coverage manifest* — what it observed, what it confirmed absent, and what was unreachable, unsupported, or simply never configured. A recorder that overclaims is worse than no recorder.
-2. **Observation before control.** Reading is safe by default. Any control operation (suspend, resume, terminate) requires an explicit, expiring, single-use approval, produces a receipt, and fails closed.
-
-## 60-second start: record one MCP server
-
-```bash
-git clone https://github.com/dark-vector-cognition/witness && cd witness && npm install
-# wrap any stdio MCP server — in .mcp.json / claude_desktop_config.json / Cursor's mcp.json:
-#   "github": { "command": "node", "args": ["/path/to/witness/bin/witness.mjs", "--as", "you@company", "--",
-#                                           "npx", "-y", "@modelcontextprotocol/server-github"] }
-node bin/witness.mjs wrap --as you@company   # or: wrap path/to/.mcp.json — rewrites the entries, keeps a .witness-bak
-node bin/witness.mjs tail        # live: every tool call, its outcome, its latency
-node bin/witness.mjs verify      # walk every chain; exit 1 on the first broken link
-node bin/witness.mjs report      # markdown digest of the last 7 days — the thing you show your lead
-node bin/witness.mjs query --tool read_file --status error --since 24h
-node bin/witness.mjs anchor --git   # commit every chain head to a git repo in ~/.witness (third-party clock)
-node bin/witness.mjs unwrap      # put the config back
-node bin/witness.mjs http --upstream https://mcp.example.com/mcp --as you@company   # remote server: point the config's "url" at the printed 127.0.0.1 address
-```
-
-`wrap` auto-detects `.mcp.json` (Claude Code project), `~/.claude.json`, `~/.cursor/mcp.json`, and Claude Desktop. Tested end-to-end against a third-party server (desktop-commander 0.2.50, 26 tools): transparent relay, correct ok/error classification, hashed arguments, verified chain.
-
-Every frame passes through untouched. If Witness cannot write its log, it says so on stderr and keeps relaying — breakage can cost records, never uptime. Records live in `~/.witness/log/<session>.jsonl` (`WITNESS_HOME` to move them). The format is documented in [SPEC.md](SPEC.md) and is implementable without this code.
-
-## Real today (v0.2)
-
-- **MCP stdio proxy.** `witness -- <server command>` relays JSON-RPC between any harness (Claude Code, Cursor, Claude Desktop, Cowork) and any stdio MCP server, recording `session_start`, the client identity from `initialize`, every `tools/call` with a SHA-256 of its arguments, every result with status (`ok` / `error` / `unknown` if the server never answered), latency, and `session_end` with counts. Non-JSON lines pass through and are recorded as `raw`. Tested against a fake server for byte-for-byte transparency, outcome classification, secret exclusion, chain verification, tamper detection, and recorder-failure isolation.
-- **HTTP / SSE transport.** `witness http --upstream <url>` is a loopback reverse proxy for remote MCP servers (Streamable HTTP and legacy SSE): bodies relay byte-for-byte, `Authorization` passes through and is never recorded, JSON and `text/event-stream` responses are parsed on the way past into the same `tool_call` / `tool_result` records, an unreachable upstream answers a JSON-RPC 502 and the call seals as `unknown`. Tested against a fake HTTP MCP server for split-chunk SSE, error classification, secret exclusion and chain verification.
-- **`wrap` / `unwrap`, `query`, `report`, `anchor`.** Config rewriting with a backup and dry-run; joined call rows filterable by tool, server, principal, status, time; a markdown digest with error rate and p50/p95 latency per tool; chain heads checkpointed into a chain of their own and optionally git-committed.
-- **Declared principal.** `--as you@company` (or `WITNESS_AS`) labels every call. The record says `verified: false`, because it is. Proven identity is the org-boundary product, not a v0.2 claim.
-
-- **Append-only evidence ledger.** Every collection and control event is a JSONL record, SHA-256 chained to the previous one. `npm run verify:ledger` re-walks the whole chain; a 41-event chain has been verified end-to-end.
-- **Coverage manifests.** Each adapter emits a discovery envelope and a verdict — *observed / absent / unreachable / unsupported / unconfigured* — with its known limitations stated in the record, not in the marketing.
-- **Inventory and health.** Agents, models, MCP servers, connectors, and local runtimes normalised into one snapshot, with reachability and allow-listed version fields.
-- **Permission and approval matrix.** Observed access is shown separately from stated policy, so the gap between "what it can do" and "what it was allowed to do" is visible.
-- **Bounded control.** A loopback-only (`127.0.0.1`) control service that can suspend, resume, and terminate one *recorder-owned* disposable test agent. Approvals are two-minute, single-use, nonce-bound; only the nonce hash is persisted. The service never accepts an arbitrary PID, executable, path, or shell command from the interface. A browser-verified `running → suspended → running` cycle produces durable receipts.
-- **Evidence export.** `npm run export:evidence` writes an operator-controlled bundle (JSON) with the verified chain — the artefact a Flight Check readout is built from.
-- **Secret exclusion by construction.** Collectors strip any key matching `token | secret | password | authorization | cookie | api_key | credential` recursively, and the test suite asserts that no such key reaches the snapshot or the export.
-- **Proxy sessions feed the operator UI.** Ingest reconciles every recorded session — servers seen, calls, outcomes, broken chains — into the inventory, coverage manifest and timeline, so a Flight Check readout is built from the same records `witness verify` checks.
-- **Three reference adapters** for local sources (a Markdown ticket store, a localhost retrieval service, and a read-only ComfyUI runtime over a private network), included as worked examples of the adapter contract.
-- **Operator interface.** Overview, coverage, mission timeline, permission matrix, and control — readable by an IT director without a terminal.
-
-## Not built yet ("Next")
-
-These are the gaps between v0.2 and the full Flight Check promise, in the order we are closing them:
-
-1. **External timestamping** of anchored chain heads (today: your own git repo is the clock).
-2. **Cross-vendor adapter contract with conformance tests**, so a new adapter cannot silently overclaim coverage.
-3. **Verified principals and device-backed operator identity** to replace declared labels in records and approval receipts.
-4. Continuous collectors, retention policy, search, multi-machine federation, RBAC/SSO, packaged enterprise deployment.
-
-The full truth ledger — real, simulated, deferred, and commercially risky — is kept current in [docs/STATUS.md](docs/STATUS.md).
-
-## Run it
-
-Prerequisite: Node.js 22.13 or later.
-
-```bash
-npm install
-npm run dev          # ingests from configured sources, starts the control service, opens http://localhost:3000
-npm run verify:ledger
-npm run export:evidence
-npm test             # ingest + ledger verification + production build + proxy + interface tests
-npm run test:proxy   # just the proxy suite (fast, no build)
-```
-
-On macOS, `Launch Flight Recorder.command` does the same by double-click.
-
-The reference ticket-store adapter reads from `TICKET_STORE_ROOT` (defaults to `~/Projects/experience-layering-main/ticket_store`); point it at your own store or leave it unconfigured — the coverage manifest will say so rather than fail silently.
 
 ## What it never does
 
-- No product telemetry, hosted account, cloud database, or background upload. The local ledger is the source of record.
-- No collection of API keys, bearer tokens, cookies, passwords, authorization headers, prompt bodies, retrieved documents, customer records, generated media, or environment-variable values.
-- No control of any process it did not create, in this release.
+- No product telemetry, hosted account, cloud database, or background upload.
+- No collection of API keys, bearer tokens, cookies, passwords, authorization headers, tool arguments, tool results, prompt bodies, or environment-variable values.
+- No control of any process. It relays and records; it never blocks, rewrites, or approves a call.
 
-Details: [docs/PRIVACY.md](docs/PRIVACY.md) and [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
+Details: [docs/PRIVACY.md](docs/PRIVACY.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md).
 
-## Design record
+## Run from source
 
-- [docs/PRODUCT_BRIEF.md](docs/PRODUCT_BRIEF.md) — buyer, pain, promise, wedge, risks
-- [docs/ADR-001-STACK.md](docs/ADR-001-STACK.md) — why this stack
-- [docs/ADR-002-BOUNDED-CONTROL.md](docs/ADR-002-BOUNDED-CONTROL.md) — the loopback control boundary
-- [docs/PILOT_RUNBOOK.md](docs/PILOT_RUNBOOK.md) — the evaluator walkthrough used in a Flight Check
-- [docs/STATUS.md](docs/STATUS.md) — the truth ledger
+Node.js 22.13 or later. No install step.
+
+```bash
+git clone https://github.com/dark-vector-cognition/witness && cd witness
+node bin/witness.mjs --help
+npm test     # ~6 seconds, no build
+```
+
+## Contributing
+
+Small pull requests that keep the recorder dependency-free and the README honest. Commits need a DCO sign-off — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Using it commercially
 
-Witness is free to run, fork, and embed under [Apache-2.0](LICENSE). If you want it read for you — inventory reconciled, permissions mapped, ten days of records analysed, findings ranked, and a remediation plan your engineers can act on — that is the [Agent Flight Check](https://darkvectorcognition.ai/flight-check/): two weeks, fixed price, nothing leaves your network.
+Witness is free to run, fork, and embed under [Apache-2.0](LICENSE). It is complete for one engineer on one machine. If you want an organisation's agent estate read for you — servers inventoried, permissions mapped, ten days of records analysed, findings ranked, and a remediation plan your engineers can act on — that is Dark Vector Cognition's [Agent Flight Check](https://darkvectorcognition.ai/flight-check/): two weeks, fixed price, nothing leaves your network.
 
 Dark Vector Cognition LLC · Austin, Texas · hello@darkvectorcognition.ai

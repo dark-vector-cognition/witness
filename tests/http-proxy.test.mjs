@@ -45,7 +45,7 @@ function fakeUpstream() {
 test("http proxy relays JSON + SSE byte-for-byte, records calls/results, chain verifies, auth never logged", async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), "witness-http-"));
   const up = await fakeUpstream();
-  const proxy = await startHttpProxy({ upstream: up.url, principal: "tester@dvc", serverName: "fake-http", allowKeys: ["i"], logDir: path.join(home, "log"), stderr: { write() {} } });
+  const proxy = await startHttpProxy({ upstream: up.url, principal: "tester@example.com", serverName: "fake-http", allowKeys: ["i"], logDir: path.join(home, "log"), stderr: { write() {} } });
   const post = (msg) => fetch(proxy.local, { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer SECRET-TOKEN" }, body: JSON.stringify(msg) });
 
   const init = await post({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", clientInfo: { name: "t", version: "1" } } });
@@ -79,7 +79,7 @@ test("http proxy relays JSON + SSE byte-for-byte, records calls/results, chain v
   assert.deepEqual(events, ["session_start", "session_client", "tool_call", "tool_result", "tool_call", "tool_result", "notification", "session_end"]);
   const calls = records.filter((r) => r.event === "tool_call");
   assert.equal(calls[0].tool, "echo"); assert.deepEqual(calls[0].args_summary, { i: 1 });
-  assert.equal(calls[0].principal.as, "tester@dvc"); assert.equal(calls[0].server.transport, "http");
+  assert.equal(calls[0].principal.as, "tester@example.com"); assert.equal(calls[0].server.transport, "http");
   const results = records.filter((r) => r.event === "tool_result");
   assert.equal(results[0].outcome.status, "ok"); assert.equal(results[0].call_seq, calls[0].seq);
   assert.equal(results[1].outcome.status, "error"); assert.equal(results[1].outcome.code, -32001);

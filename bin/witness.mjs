@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// witness — the DVC agent flight recorder (v0.1 recorder slice)
+// witness — transparent MCP proxy + tamper-evident record (format v0.1)
 //   witness [--as <principal>] [--name <server>] [--allow key,key] -- <command> [args...]
 //   witness verify [file|dir]
 //   witness tail [--all]
@@ -23,8 +23,9 @@ function usage(code = 0) {
       Run <command> as an MCP stdio server behind a transparent recorder.
   witness http --upstream <url> [--listen 127.0.0.1:0] [--as p] [--name s] [--allow k,k]
       Local reverse proxy for a remote MCP server (Streamable HTTP or SSE). Prints the address to point your harness at.
-  witness wrap [config] [--as p] [--dry-run] [--node /path/node] [--bin /path/witness.mjs]
+  witness wrap [config] [--as p] [--dry-run] [--via npx|path] [--node /path/node] [--bin /path/witness.mjs]
                                 Rewrite MCP config entries to run through Witness (keeps a .witness-bak).
+                                --via npx writes "npx -y @darkvector/witness@<ver>"; --via path writes "node <bin>". Default matches this install.
   witness unwrap [config]                      Reverse it.
   witness verify [file|dir]     Walk hash chains; report the first broken link. Exit 1 on failure.
   witness tail [--all]          Follow the newest session (or all) as human-readable lines.
@@ -68,7 +69,7 @@ if (argv[0] === "http") {
   process.on("SIGINT", stop); process.on("SIGTERM", stop);
 } else if (argv[0] === "wrap" || argv[0] === "unwrap") {
   const mode = argv[0];
-  const optValues = new Set([opt("--as"), opt("--node"), opt("--bin")].filter(Boolean));
+  const optValues = new Set([opt("--as"), opt("--node"), opt("--bin"), opt("--via")].filter(Boolean));
   const explicit = argv.slice(1).find((a) => !a.startsWith("--") && !optValues.has(a));
   const principal = opt("--as", process.env.WITNESS_AS || null);
   const dryRun = argv.includes("--dry-run");
@@ -77,7 +78,7 @@ if (argv[0] === "http") {
   let touched = 0;
   for (const target of targets) {
     let result;
-    try { result = rewriteConfig(target.file, { mode, principal, key: target.key, dryRun, node: opt("--node") || undefined, bin: opt("--bin") || undefined }); } catch (error) { process.stdout.write(`SKIP ${target.harness}: ${error.message}\n`); continue; }
+    try { result = rewriteConfig(target.file, { mode, principal, key: target.key, dryRun, node: opt("--node") || undefined, bin: opt("--bin") || undefined, via: opt("--via") || undefined }); } catch (error) { process.stdout.write(`SKIP ${target.harness}: ${error.message}\n`); continue; }
     if (result.note) { process.stdout.write(`SKIP ${target.harness}: ${result.note}\n`); continue; }
     const verb = mode === "wrap" ? "wrapped" : "unwrapped";
     process.stdout.write(`${dryRun ? "DRY " : ""}${target.harness} ${target.file}\n  ${result.changes.length ? `${verb}: ${result.changes.join(", ")}` : `nothing to ${mode}`}${result.skipped.length ? `\n  skipped: ${result.skipped.map((s) => `${s.name} (${s.reason})`).join(", ")}` : ""}\n`);
