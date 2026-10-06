@@ -232,11 +232,12 @@ test("pull: verifies and appends byte-exact copies, then asks only for ?after=<l
     assert.deepEqual(JSON.parse(readFileSync(feedPaths(client).peers, "utf8")), { [feed.url]: keyId });
     assert.equal((await stat(feedPaths(client).remote)).mode & 0o777, 0o700);
     assert.equal((await stat(first.file)).mode & 0o777, 0o600);
-    // The same peer by a new URL: pull finds the copy from the first line and asks again with ?after=.
+    // The same peer by a new URL: one request for the whole feed, which must repeat the copy byte for byte.
     asked.length = 0;
     const alias = `${feed.url}?mirror=1`;
     assert.equal((await pullFeed({ url: alias, home: client, fetchImpl: spy })).appended, 0);
-    assert.deepEqual(asked, [alias, `${alias}&after=2`]);
+    assert.deepEqual(asked, [alias]);
+    assert.deepEqual(JSON.parse(readFileSync(feedPaths(client).peers, "utf8")), { [feed.url]: keyId, [alias]: keyId });
   } finally {
     await feed.close();
   }
@@ -592,6 +593,63 @@ test("review 3, match: a hit counts only from a file that verifies", async () =>
   for (const h of [home, peer]) await rm(h, { recursive: true, force: true });
 });
 
+test("review 4, pull: a new URL for a copied key sends one request, and the reply must repeat the copy byte for byte", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const good = signedLines(server, [{ key: a }, { key: a }, { key: a }]);
+  const first = await pullFeed({ url: "http://peer.test/feed", home: client, fetchImpl: answer(body(good.slice(0, 2))) });
+  assert.equal(first.appended, 2);
+  const copy = remoteFile(a, client);
+  const before = readFileSync(copy);
+  const peers = () => JSON.parse(readFileSync(feedPaths(client).peers, "utf8"));
+  const mirror = "http://mirror.test/feed";
+  // bound: the URL is bound to key a only when the reply repeated the copy without a difference.
+  const cases = [
+    ["the review trigger: a tampered record that names key a", [good[0].replace('"reason":"r"', '"reason":"s"')], /line 1 of the reply differs from line 1 of the local copy/, false],
+    ["a copied line is missing", [good[0], good[2]], /line 2 of the reply differs from line 2 of the local copy/, false],
+    ["the overlap matches, then a new line is bad", [good[0], good[1], good[2].replace('"reason":"r"', '"reason":"s"')], /line 3 of the reply has a hash that does not match/, true],
+  ];
+  for (const [name, lines, reason, bound] of cases) {
+    const asked = [];
+    await assert.rejects(pullFeed({ url: mirror, home: client, fetchImpl: answer(body(lines), asked) }), (error) => {
+      assert.equal(error.exitCode, 3, name);
+      assert.match(error.message, reason, name);
+      assert.equal(error.appended, 0, name);
+      return true;
+    });
+    assert.deepEqual(asked, [mirror], `${name}: one request, no second one`);
+    assert.deepEqual(readFileSync(copy), before, `${name}: the copy is unchanged`);
+    assert.equal(peers()[mirror], bound ? a : undefined, `${name}: bound ${bound}`);
+  }
+  // An honest mirror repeats the copy and adds a new line: one request, one line appended, the URL bound.
+  const honestUrl = "http://mirror2.test/feed";
+  const asked = [];
+  const honest = await pullFeed({ url: honestUrl, home: client, fetchImpl: answer(body(good), asked) });
+  assert.equal(honest.appended, 1);
+  assert.deepEqual(asked, [honestUrl]);
+  assert.equal(readFileSync(copy, "utf8"), body(good));
+  assert.equal(peers()[honestUrl], a);
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+test("review 5, publish: a local last line with no newline is verified; a broken one exits 3 and publishes nothing", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  writeLocalFeed(home, ["doc a"]);
+  const paths = feedPaths(home);
+  appendFileSync(paths.local, "{broken");
+  const broken = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(broken.code, 3, broken.err);
+  assert.match(broken.err, /refusals\.jsonl line 2 is not a JSON object/);
+  assert.equal(existsSync(paths.published), false, "nothing published");
+  // A whole record whose newline is not written yet is a valid line.
+  writeFileSync(paths.local, readFileSync(paths.local, "utf8").replace("{broken", "").replace(/\n$/, ""));
+  assert.equal(publishFeed({ keyId, home }).appended, 1);
+  await rm(home, { recursive: true, force: true });
+});
+
 test("review 6, match: only ENOENT means missing; any other read error exits 2", async () => {
   const home = await tempHome();
   const [digest] = writeLocalFeed(home, ["doc a"]);
@@ -621,18 +679,79 @@ test("review 6, match: only ENOENT means missing; any other read error exits 2",
   await rm(home, { recursive: true, force: true });
 });
 
-test("review 5, publish: a local last line with no newline is verified; a broken one exits 3 and publishes nothing", async () => {
-  const home = await tempHome();
-  const { keyId } = keygen(home);
-  writeLocalFeed(home, ["doc a"]);
-  const paths = feedPaths(home);
-  appendFileSync(paths.local, "{broken");
-  const broken = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
-  assert.equal(broken.code, 3, broken.err);
-  assert.match(broken.err, /refusals\.jsonl line 2 is not a JSON object/);
-  assert.equal(existsSync(paths.published), false, "nothing published");
-  // A whole record whose newline is not written yet is a valid line.
-  writeFileSync(paths.local, readFileSync(paths.local, "utf8").replace("{broken", "").replace(/\n$/, ""));
-  assert.equal(publishFeed({ keyId, home }).appended, 1);
-  await rm(home, { recursive: true, force: true });
+test("review 7, pull: a reply whose last line has no newline exits 3 and keeps the complete lines before it", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const good = signedLines(server, [{ key: a }, { key: a }]);
+  await assert.rejects(pullFeed({ url: "http://peer.test/feed", home: client, fetchImpl: answer(`${good[0]}\n${good[1]}`) }), (error) => {
+    assert.equal(error.exitCode, 3);
+    assert.match(error.message, /line 2 of the reply has no newline at the end/);
+    assert.equal(error.appended, 1);
+    return true;
+  });
+  assert.equal(readFileSync(remoteFile(a, client), "utf8"), `${good[0]}\n`, "byte-exact: no newline is added");
+  // A whole reply on the next pull continues the copy.
+  const asked = [];
+  assert.equal((await pullFeed({ url: "http://peer.test/feed", home: client, fetchImpl: answer(`${good[1]}\n`, asked) })).appended, 1);
+  assert.deepEqual(asked, ["http://peer.test/feed?after=0"]);
+  assert.equal(readFileSync(remoteFile(a, client), "utf8"), body(good));
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+test("review 8, pull: an exception while a line is checked fails that line; the prefix stays and the exit is 3", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const [good] = signedLines(server, [{ key: a }]);
+  // Valid JSON that names a trusted key, with 10,000 nested arrays: canonical() overflows the stack while it hashes.
+  const deep = `{"v":"0.2","seq":1,"session":"published","event":"feed","prev":"${JSON.parse(good).hash}","hash":"${"0".repeat(64)}","deep":${"[".repeat(10000)}${"]".repeat(10000)},"signer":{"key_id":"${a}","alg":"ed25519","sig":"AA=="}}`;
+  mkdirSync(feedPaths(server).dir, { recursive: true });
+  writeFileSync(feedPaths(server).published, `${good}\n${deep}\n`);
+  const feed = await startFeedServer({ home: server, port: 0 });
+  try {
+    const result = await run(["feed", "pull", feed.url], { WITNESS_HOME: client });
+    assert.equal(result.code, 3, result.err);
+    assert.match(result.err, /line 2 of the reply cannot be checked \(RangeError/);
+    assert.match(result.out, /^1 record\(s\) appended/);
+    assert.equal(readFileSync(remoteFile(a, client), "utf8"), `${good}\n`);
+  } finally {
+    await feed.close();
+  }
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+test("review 9, pull: one GET per run with no body or credentials, after only for a bound URL, no redirect", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const { keyId } = keygen(server);
+  trust(server, client, keyId);
+  writeLocalFeed(server, ["doc a", "doc b"]);
+  publishFeed({ keyId, home: server });
+  const feed = await startFeedServer({ home: server, port: 0 });
+  const seen = [];
+  feed.server.on("request", (req) => seen.push({ line: `${req.method} ${req.url}`, headers: req.headers }));
+  const redirect = http.createServer((req, res) => { seen.push({ line: `REDIRECT ${req.url}`, headers: req.headers }); res.writeHead(302, { location: feed.url }); res.end(); });
+  await new Promise((resolve) => redirect.listen(0, "127.0.0.1", resolve));
+  try {
+    const pull = async (url) => { seen.length = 0; const result = await run(["feed", "pull", url], { WITNESS_HOME: client }); return { ...result, lines: seen.map((r) => r.line) }; };
+    const fresh = await pull(feed.url.replace("http://", "http://user:secret@"));
+    assert.equal(fresh.code, 0, fresh.err);
+    assert.deepEqual(fresh.lines, ["GET /feed"], "a new URL: one GET, no after");
+    assert.equal(seen[0].headers.authorization, undefined, "user:password is removed from the URL");
+    assert.equal(seen[0].headers.cookie, undefined);
+    assert.equal(seen[0].headers["content-length"], undefined);
+    assert.deepEqual((await pull(feed.url)).lines, ["GET /feed?after=1"], "a bound URL: one GET with after");
+    assert.deepEqual((await pull(`${feed.url}?mirror=1`)).lines, ["GET /feed?mirror=1"], "a new URL for a copied key: one GET, no after");
+    const moved = await pull(`http://127.0.0.1:${redirect.address().port}/feed`);
+    assert.equal(moved.code, 1);
+    assert.match(moved.err, /failed: unexpected redirect/);
+    assert.deepEqual(moved.lines, ["REDIRECT /feed"], "the redirect is not followed");
+  } finally {
+    redirect.close();
+    await feed.close();
+  }
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
 });
