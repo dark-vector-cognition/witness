@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
-import { DEFAULT_HOST, DEFAULT_PORT, feedChainRule, matchFeed, publishFeed, pullFeed, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
+import { DEFAULT_HOST, DEFAULT_PORT, feedChainRule, matchFeed, publishFeed, pullFeed, readFeedFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
 import { keygen } from "../lib/keys.mjs";
 import { runProxy } from "../lib/proxy.mjs";
 import { runScore } from "../lib/score.mjs";
@@ -226,11 +226,15 @@ if (argv[0] === "verify") {
   if (files.length === 0) { process.stdout.write(`no sessions found under ${target}\n`); process.exit(0); }
   let failed = 0; let chains = 0;
   for (const file of files) {
-    const all = readRecords(file);
-    const rule = feedChainRule(file, all);
+    // A feed file by its path is read with the strict feed parser. Any other file is read as before, then checked for published records.
+    let rule = feedChainRule(file);
+    const all = rule ? null : readRecords(file);
+    if (!rule) rule = feedChainRule(file, all);
     if (rule) {
       // A feed file is one chain. Published and remote copies need a trusted signer on every record (SPEC-0.2 section 5).
-      const result = verifyFeedChain(all, rule); chains += 1;
+      // A blank or unparseable line is a FAIL, not a crash.
+      const parsed = readFeedFile(file);
+      const result = parsed.problem ? { ok: false, count: 0, reason: parsed.problem } : verifyFeedChain(parsed.records, rule); chains += 1;
       process.stdout.write(`${result.ok ? "OK  " : "FAIL"} ${path.basename(file)}  ${result.count} records${rule.signed ? " (signed)" : ""}${result.ok ? "" : `: ${result.reason}`}\n`);
       if (!result.ok) failed += 1;
       continue;

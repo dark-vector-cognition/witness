@@ -828,3 +828,46 @@ test("round 3 item 1: a remote *.jsonl name must be exactly <key_id>.jsonl; any 
   assert.equal(good.code, 0, good.err);
   for (const h of [home, peer]) await rm(h, { recursive: true, force: true });
 });
+
+test("round 3 item 5: a whitespace-only or empty line is a bad line in verify, match, pull and publish", async () => {
+  const home = await tempHome();
+  const peer = await tempHome();
+  const { keyId } = keygen(home);
+  const a = keygen(peer).keyId;
+  trust(peer, home, a);
+  const paths = feedPaths(home);
+  const [digest] = writeLocalFeed(home, ["doc a"]);
+  publishFeed({ keyId, home });
+  const clean = readFileSync(paths.published, "utf8");
+  for (const blank of [" \t", ""]) {
+    // The review trigger: a blank line in an otherwise valid published feed with a matching indicator.
+    writeFileSync(paths.published, `${clean}${blank}\n`);
+    const match = await run(["feed", "match", digest], { WITNESS_HOME: home });
+    assert.equal(match.code, 2, `${JSON.stringify(blank)}: ${match.out}`);
+    assert.match(match.err, /published\.jsonl line 2 is blank/);
+    const verify = await run(["verify", paths.published], { WITNESS_HOME: home });
+    assert.equal(verify.code, 1);
+    assert.match(verify.out, /FAIL published\.jsonl {2}0 records \(signed\): published\.jsonl line 2 is blank/);
+    const publish = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+    assert.equal(publish.code, 3);
+    assert.match(publish.err, /published\.jsonl line 2 is blank/);
+  }
+  writeFileSync(paths.published, clean);
+  // A blank line in the local chain stops publish with exit 3.
+  writeFileSync(paths.local, `${readFileSync(paths.local, "utf8")}  \n`);
+  const local = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(local.code, 3);
+  assert.match(local.err, /refusals\.jsonl line 2 is blank/);
+  // pull: a blank line in the reply, and a blank line in the local copy.
+  const good = signedLines(peer, [{ key: a }, { key: a }]);
+  await assert.rejects(pullFeed({ url: "http://peer.test/feed", home, fetchImpl: answer(`${good[0]}\n \t\n${good[1]}\n`) }), (error) => error.exitCode === 3 && /line 2 of the reply is not JSON/.test(error.message) && error.appended === 1);
+  appendFileSync(remoteFile(a, home), " \n");
+  await assert.rejects(pullFeed({ url: "http://peer.test/feed", home, fetchImpl: answer(`${good[1]}\n`) }), (error) => error.exitCode === 3 && /line 2 is blank/.test(error.message));
+  // An empty file and the empty element after a final newline stay fine.
+  writeFileSync(remoteFile(a, home), "");
+  writeFileSync(paths.local, "");
+  rmSync(paths.published);
+  assert.equal((await run(["feed", "match", digest], { WITNESS_HOME: home })).code, 1);
+  assert.equal((await run(["verify", path.join(home, "feed")], { WITNESS_HOME: home })).code, 0);
+  for (const h of [home, peer]) await rm(h, { recursive: true, force: true });
+});
