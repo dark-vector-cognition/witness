@@ -893,3 +893,55 @@ test("round 3 item 4: publish exits 3 and appends nothing when published.jsonl d
   assert.equal(verifyFeedChain(readLines(paths.published).map((line) => JSON.parse(line)), { signed: true, home }).ok, true);
   await rm(home, { recursive: true, force: true });
 });
+
+test("round 3 item 3: a peers.json that cannot be read or holds bad data stops pull with exit 1 and changes nothing", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  const b = keygen(server).keyId;
+  trust(server, client, a);
+  trust(server, client, b);
+  const url = "http://peer.test/feed";
+  const goodA = signedLines(server, [{ key: a }]);
+  assert.equal((await pullFeed({ url, home: client, fetchImpl: answer(body(goodA)) })).appended, 1);
+  const paths = feedPaths(client);
+  const copyA = readFileSync(remoteFile(a, client));
+  // The review trigger: peers.json cannot be read, and the URL now serves a valid feed signed by another trusted key.
+  const fromB = body(signedLines(server, [{ key: b }]));
+  const cases = [
+    ["a directory", () => { rmSync(paths.peers); mkdirSync(paths.peers); }, /cannot read .*peers\.json: EISDIR/],
+    ["not JSON", () => writeFileSync(paths.peers, "{not json"), /peers\.json is not a JSON object/],
+    ["an array", () => writeFileSync(paths.peers, "[]\n"), /peers\.json is not a JSON object/],
+    ["a number as key_id", () => writeFileSync(paths.peers, `{"${url}": 5}\n`), /binds "http:\/\/peer\.test\/feed" to 5, which is not a key_id/],
+    ["a path as key_id", () => writeFileSync(paths.peers, `{"${url}": "../../keys/x"}\n`), /which is not a key_id/],
+  ];
+  if (process.getuid?.() !== 0) cases.push(["no read permission", () => { writeFileSync(paths.peers, "{}\n"); chmodSync(paths.peers, 0o000); }, /EACCES/]);
+  for (const [name, make, reason] of cases) {
+    rmSync(paths.peers, { recursive: true, force: true });
+    writeFileSync(paths.peers, "{}\n");
+    make();
+    const state = () => { try { return readFileSync(paths.peers, "utf8"); } catch (error) { return error.code; } };
+    const before = state();
+    const asked = [];
+    await assert.rejects(pullFeed({ url, home: client, fetchImpl: answer(fromB, asked) }), (error) => {
+      assert.equal(error.exitCode, 1, name);
+      assert.match(error.message, reason, name);
+      return true;
+    });
+    assert.deepEqual(asked, [], `${name}: no request`);
+    assert.equal(existsSync(remoteFile(b, client)), false, `${name}: nothing from key b`);
+    assert.deepEqual(readFileSync(remoteFile(a, client)), copyA, `${name}: the copy is unchanged`);
+    assert.equal(state(), before, `${name}: peers.json is unchanged`);
+  }
+  // Through the CLI the exit code is 1 as well.
+  rmSync(paths.peers, { recursive: true, force: true });
+  writeFileSync(paths.peers, "{not json");
+  const cli = await run(["feed", "pull", "http://127.0.0.1:9/feed"], { WITNESS_HOME: client });
+  assert.equal(cli.code, 1);
+  assert.equal(readFileSync(paths.peers, "utf8"), "{not json", "peers.json is unchanged");
+  // A good peers.json keeps its other bindings when pull adds one.
+  writeFileSync(paths.peers, `{"http://other.test/feed": "${a}"}\n`);
+  await pullFeed({ url: "http://third.test/feed", home: client, fetchImpl: answer(body(goodA)) });
+  assert.deepEqual(JSON.parse(readFileSync(paths.peers, "utf8")), { "http://other.test/feed": a, "http://third.test/feed": a });
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
