@@ -221,12 +221,23 @@ if (argv[0] === "verify") {
   const target = argv[1] ? path.resolve(argv[1]) : logDir();
   let files;
   try { files = target.endsWith(".jsonl") ? [target] : listSessionFiles(target); } catch { files = []; }
+  // The feed directory: its remote copies are chains too.
+  if (!target.endsWith(".jsonl") && path.basename(target) === "feed") files.push(...listSessionFiles(path.join(target, "remote")));
   if (files.length === 0) { process.stdout.write(`no sessions found under ${target}\n`); process.exit(0); }
   let failed = 0; let chains = 0;
   for (const file of files) {
+    const all = readRecords(file);
+    const rule = feedChainRule(file, all);
+    if (rule) {
+      // A feed file is one chain. Published and remote copies need a trusted signer on every record (SPEC-0.2 section 5).
+      const result = verifyFeedChain(all, rule); chains += 1;
+      process.stdout.write(`${result.ok ? "OK  " : "FAIL"} ${path.basename(file)}  ${result.count} records${rule.signed ? " (signed)" : ""}${result.ok ? "" : `: ${result.reason}`}\n`);
+      if (!result.ok) failed += 1;
+      continue;
+    }
     // A file may hold one session or a concatenated export of several; each session is its own chain.
     const bySession = new Map();
-    for (const record of readRecords(file)) { const key = record.session ?? "?"; if (!bySession.has(key)) bySession.set(key, []); bySession.get(key).push(record); }
+    for (const record of all) { const key = record.session ?? "?"; if (!bySession.has(key)) bySession.set(key, []); bySession.get(key).push(record); }
     for (const [session, records] of bySession) {
       const result = verifyChain(records, { publicKeys: publicKeyLoader() }); chains += 1;
       const label = bySession.size > 1 ? `${path.basename(file)} ${session}` : path.basename(file);

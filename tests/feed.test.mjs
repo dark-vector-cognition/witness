@@ -321,3 +321,44 @@ test("match: exit 0 when found in any feed file, 1 when not found, 2 on a bad ar
   await rm(blank, { recursive: true, force: true });
   await rm(home, { recursive: true, force: true });
 });
+
+test("verify: accepts published.jsonl and remote copies as signed chains, and rejects stripped signers and a mixed copy", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const { keyId } = keygen(server);
+  trust(server, client, keyId);
+  writeLocalFeed(server, ["doc a", "doc b"]);
+  publishFeed({ keyId, home: server });
+  const feed = await startFeedServer({ home: server, port: 0 });
+  try { await pullFeed({ url: feed.url, home: client }); } finally { await feed.close(); }
+  const own = await run(["verify", path.join(server, "feed")], { WITNESS_HOME: server });
+  assert.equal(own.code, 0, own.out);
+  assert.match(own.out, /OK {3}refusals\.jsonl {2}2 records\n/);
+  assert.match(own.out, /OK {3}published\.jsonl {2}2 records \(signed\)/);
+  const copy = remoteFile(keyId, client);
+  for (const target of [copy, path.join(client, "feed", "remote"), path.join(client, "feed")]) {
+    const result = await run(["verify", target], { WITNESS_HOME: client });
+    assert.equal(result.code, 0, `${target}: ${result.out}`);
+    assert.match(result.out, new RegExp(`OK {3}${keyId}\\.jsonl {2}2 records \\(signed\\)`));
+  }
+  // The verifier's home lacks the peer key: a signer nobody can check is not evidence.
+  const stranger = await tempHome();
+  const unknown = await run(["verify", copy], { WITNESS_HOME: stranger });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.out, /no public key/);
+  // A copy under another key's name.
+  const renamed = path.join(client, "feed", "remote", "k_0000beef.jsonl");
+  copyFileSync(copy, renamed);
+  const mixed = await run(["verify", renamed], { WITNESS_HOME: client });
+  assert.equal(mixed.code, 1);
+  assert.match(mixed.out, new RegExp(`signer ${keyId} at seq 0 in the copy of k_0000beef`));
+  await rm(renamed);
+  // A stripped signer leaves a valid hash chain, so only requireSigner catches it.
+  const records = readLines(copy).map((line) => JSON.parse(line));
+  delete records[0].signer;
+  writeFileSync(copy, records.map((r) => `${JSON.stringify(r)}\n`).join(""));
+  const stripped = await run(["verify", copy], { WITNESS_HOME: client });
+  assert.equal(stripped.code, 1);
+  assert.match(stripped.out, /FAIL .*missing signer at seq 0/);
+  for (const home of [server, client, stranger]) await rm(home, { recursive: true, force: true });
+});
