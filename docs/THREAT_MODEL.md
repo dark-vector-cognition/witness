@@ -88,6 +88,11 @@ Scope: `witness keygen`, `witness feed publish`, `witness feed serve` and `witne
 - **A local key compromise.** Whoever reads `keys/<key_id>.key` can sign as this home. The file is 0600, and Witness never sends it anywhere.
 - **A server that floods.** Pull reads at most 32 MiB and waits at most 30 seconds. Then it exits 1 and appends nothing.
 - **A client that probes the server.** The server answers only `GET /feed`. Every other path gives 404 and every other method on `/feed` gives 405. It has no write endpoint and reads only `feed/published.jsonl`. It binds only to `--host`, default `127.0.0.1`.
+- **A local user who swaps `published.jsonl` for a link**, for example a symbolic link or a hard link to `keys/<key_id>.key`. The server opens the file with `O_NOFOLLOW` and `O_NONBLOCK`, and it serves only a regular file with one hard link. A link, a directory or a FIFO gives 500 and no file bytes.
+- **A client that exhausts the server.** The server streams each reply with backpressure and never reads the whole file into memory. A reply holds at most 32 MiB of whole lines. At most 8 replies run at once, and a ninth request gets 503. A socket with no traffic for 30 seconds is destroyed, and a request must arrive in 30 seconds.
+- **A new URL that names a copied key.** Pull sends one request for the whole feed. The lines that overlap the local copy must be byte-identical to it, and every new line must verify and continue the chain. Any difference stops the pull with exit 3 and appends nothing after it.
+- **A reply that trips the checker.** A last line with no newline fails. An exception while a line is checked, for example a record nested too deep to hash, fails that line. Both keep the lines before it and exit 3.
+- **A forged or broken feed file on disk.** `witness feed match` counts a hit only from a file that verifies: a valid chain, signed by a trusted key where the file needs a signer, and for a remote copy signed by the key in its file name. A file that does not verify, or cannot be read, gives exit 2.
 - **A broken or stripped local chain.** publish verifies `feed/refusals.jsonl` and `feed/published.jsonl` first. If either is broken, it publishes nothing and exits 3. The hash does not cover `signer`, so a signed chain requires a signer on every record, and a stripped signer fails.
 
 ### Residual risk
@@ -96,3 +101,4 @@ Scope: `witness keygen`, `witness feed publish`, `witness feed serve` and `witne
 - The feed has no TLS and no authentication. Anyone on the network path can read it. Bind to loopback, or carry the feed over SSH or a VPN.
 - The gate does not verify signatures again. A local user who can write `feed/remote/` can add entries. That user can also write `keys/`, so this is the local-user risk above, and a forged entry causes refusals only.
 - An indicator digest of a short or common value, such as a domain or a tool name, can be reversed by guessing.
+- `O_NOFOLLOW` checks only the last part of the path. A link at `feed/` or above is followed. Making such a link needs write access to `WITNESS_HOME`, which is the local-user risk above.

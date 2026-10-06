@@ -14,13 +14,21 @@ Witness is local-only, with two exceptions. Each exception happens only when you
 
 ## Exception 2: `witness feed serve` exposes the published feed over HTTP
 
-- It serves `feed/published.jsonl` over plain HTTP, with no authentication and no TLS, on the address you give with `--host`. The default is `127.0.0.1`, which only this machine can reach. With any other address, every host that can reach that address can read the feed.
+- It serves `feed/published.jsonl` over plain HTTP, with no authentication and no TLS, on the address you give with `--host`. It never reads through a symbolic link or a hard link, so it cannot serve another file such as a private key. The default is `127.0.0.1`, which only this machine can reach. With any other address, every host that can reach that address can read the feed.
 - What it exposes, for each refused call: the indicator kind and digest (`indicator.sha256`), the reason text (at most 240 characters, written by the council), `origin.host_sha256`, `origin.session`, the timestamp, and the signer's `key_id` and signature.
 - `origin.host_sha256` is a plain sha256 of the host name. Anyone can recover a host name that is easy to guess from its digest. The same is true for an indicator digest of a short or common value, such as a domain or a tool name.
 - A reason is free text. Read `feed/published.jsonl` before you serve it.
 - `witness feed publish` copies only the fields above into `feed/published.jsonl`. Nothing else from the local feed or from a session goes into it.
 
-`witness feed pull <url>` sends one HTTP GET to the URL you give, with an `after` number in the query. It sends no record. It stores the peer's signed records in `feed/remote/<key_id>.jsonl` and the URL in `feed/remote/peers.json`.
+`witness feed pull <url>` sends exactly one HTTP GET each time you run it. It sends no record.
+
+- The request goes to the URL you give. Witness removes any `user:password@` and any `#fragment` from it first, so no credentials go out.
+- If this home already holds a copy from that URL (the URL is in `feed/remote/peers.json`), the query also carries `after=<last seq of the copy>`. Any other URL gets no `after`, and the peer sends its whole feed.
+- The request has no body and no cookie. It carries the default headers of the Node.js `fetch`: `accept`, `accept-language`, `accept-encoding`, `sec-fetch-mode` and `user-agent: node`.
+- Pull follows no redirect. A redirect stops the pull with exit 1, and no second request goes out.
+- The peer sees your IP address, the time of the request, and the `after` number. The `after` number tells the peer how much of its feed you already hold.
+
+Pull stores the peer's signed records in `feed/remote/<key_id>.jsonl` and the URL in `feed/remote/peers.json`.
 
 `keys/<key_id>.key` never leaves the machine. Witness never sends a `.pub` file anywhere. You give your `.pub` to a peer yourself.
 

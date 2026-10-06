@@ -193,25 +193,40 @@ witness feed publish --key <key_id>
 witness feed serve [--host 127.0.0.1] [--port 7480]
     Read-only HTTP, bound only to --host. Print {"listen": "<url>", "file": "<published.jsonl>"}.
     GET /feed            published.jsonl as application/x-ndjson, bytes as stored.
-    GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send every byte after them.
-    Missing published.jsonl: 200 with an empty body. A last line with no newline is held back.
+    GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send the bytes after them.
+    A reply holds whole lines only, at most 32 MiB. A last line with no newline is held back. Pull again for the rest.
+    published.jsonl is opened with O_NOFOLLOW and O_NONBLOCK. It must be a regular file with one hard link.
+    A symbolic link, a hard link, a directory or a FIFO gives 500 and no file bytes. Missing published.jsonl: 200, empty body.
+    The reply is streamed with backpressure; the file is never read whole into memory.
+    At most 8 replies at once; another request gets 503 with Retry-After: 1.
+    A socket with no traffic for 30 seconds is destroyed. A request must arrive in 30 seconds.
     A bad after value: 400. Another method on /feed: 405 with Allow: GET. Every other path: 404. No write endpoint.
 
 witness feed pull <url>
-    url is a peer's /feed endpoint. Ask for ?after=<last seq in the local copy of that peer>; a new peer gets no after.
-    Check each returned line, in order: valid UTF-8 and JSON; event "feed"; signer present; the same key_id as the
+    url is a peer's /feed endpoint. Send exactly one GET, with no body, and follow no redirect.
+    A URL bound in remote/peers.json to a local copy gets ?after=<last seq of that copy>. Every line of the reply is new.
+    Any other URL gets no after, so the reply starts at seq 0. When its first line names a key_id that has a local
+    copy, the first lines of the reply must be byte-identical to the lines of that copy. The lines after them are new.
+    Check each new line, in order: valid UTF-8 and JSON; event "feed"; signer present; the same key_id as the
     peer and as every other line; keys/<key_id>.pub present, ed25519, and hashing to key_id; hash recomputes with
     signer removed; signature valid; seq and prev continue the local copy (seq 0 and prev GENESIS for a new peer);
-    indicator.kind and indicator.sha256 present.
-    Append each line that passes, byte for byte, to feed/remote/<key_id>.jsonl.
-    At the first line that fails: keep the lines before it, append nothing after it, print the reason, exit 3.
-    Network or file errors: exit 1. Success: print the count, exit 0.
+    indicator.kind and indicator.sha256 present. An exception while a line is checked is a failed line.
+    A reply that does not end with a newline fails at its last line.
+    Append each new line that passes, byte for byte, to feed/remote/<key_id>.jsonl.
+    At the first line that fails or differs: keep the new lines before it, append nothing after it, print the reason, exit 3.
+    Network or file errors, a redirect, or a status other than 200: exit 1. Success: print the count, exit 0.
+    The URL is bound to the key when the reply adds lines to the copy or repeats it without a difference.
     The reply is capped at 32 MiB and 30 seconds. To accept a new key at a known URL, remove the URL from remote/peers.json.
 
 witness feed match <sha256>
-    Look in feed/refusals.jsonl, feed/published.jsonl and every feed/remote/*.jsonl.
+    Look in feed/refusals.jsonl, feed/published.jsonl and every feed/remote/*.jsonl. A hit counts only from a file that verifies:
+      refusals.jsonl          a valid chain
+      published.jsonl         a valid chain, every record signed by a trusted key in keys/
+      remote/<key_id>.jsonl   a valid chain, every record signed by keys/<key_id>.pub, signer.key_id equal to the file name
+    Only ENOENT means a missing file or directory.
     Exit 0 when found (print each file and the indicator kind), 1 when not found,
-    2 on a malformed <sha256>, a feed file that cannot be read, or a line that does not parse. An error wins over a hit.
+    2 on a malformed <sha256>, a file or directory that cannot be read, a line that does not parse, or a file that
+    does not verify. An error wins over a hit.
 
 witness verify [file|dir]
     A feed file is one chain with seq equal to its position. published.jsonl and remote/*.jsonl need a trusted signer
