@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, verify as edVerify } from "node:crypto";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import http from "node:http";
 import net from "node:net";
@@ -944,4 +944,67 @@ test("round 3 item 3: a peers.json that cannot be read or holds bad data stops p
   await pullFeed({ url: "http://third.test/feed", home: client, fetchImpl: answer(body(goodA)) });
   assert.deepEqual(JSON.parse(readFileSync(paths.peers, "utf8")), { "http://other.test/feed": a, "http://third.test/feed": a });
   for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+// Open descriptors of this process that point at file. Linux only (/proc/self/fd); null elsewhere.
+function openDescriptors(file) {
+  let names;
+  try { names = readdirSync("/proc/self/fd"); } catch { return null; }
+  let count = 0;
+  for (const name of names) {
+    try { if (readlinkSync(`/proc/self/fd/${name}`) === file) count += 1; } catch { /* the fd closed meanwhile */ }
+  }
+  return count;
+}
+
+test("round 3 item 2: 40 clients that leave mid-scan never hold more than 8 scans or 8 descriptors, and 0 after", async () => {
+  const home = await tempHome();
+  const file = feedPaths(home).published;
+  mkdirSync(path.dirname(file), { recursive: true });
+  // 32 MiB of lines with small seq values: ?after=999999999999999 makes every scan read the whole file.
+  const lines = [];
+  for (let seq = 0, total = 0; total < 32 * 1024 * 1024; seq += 1) { lines.push(JSON.stringify({ seq, pad: "z".repeat(1000) })); total += lines.at(-1).length + 1; }
+  writeFileSync(file, body(lines));
+  const feed = await startFeedServer({ home, port: 0 });
+  const peak = { replies: 0, scans: 0, handles: 0, descriptors: 0 };
+  let scansSeen = 0;
+  const sample = () => {
+    const now = feed.load();
+    for (const key of ["replies", "scans", "handles"]) peak[key] = Math.max(peak[key], now[key]);
+    if (now.scans > 0) scansSeen += 1;
+    peak.descriptors = Math.max(peak.descriptors, openDescriptors(file) ?? 0);
+  };
+  const sampler = setInterval(sample, 1);
+  try {
+    const sockets = [];
+    for (let i = 0; i < 40; i += 1) {
+      const socket = net.connect(feed.port, "127.0.0.1");
+      socket.on("error", () => {});
+      socket.on("data", () => {});
+      socket.write("GET /feed?after=999999999999999 HTTP/1.1\r\nHost: feed\r\n\r\n");
+      sockets.push(socket);
+      // Each client leaves 10 ms after it asks, while its scan of 32 MiB still runs.
+      setTimeout(() => socket.destroy(), 10);
+      await sleep(15);
+      sample();
+    }
+    // Wait until every reply has given back its slot, its scan and its file handle.
+    const deadline = Date.now() + 10_000;
+    while (Object.values(feed.load()).some((n) => n > 0) && Date.now() < deadline) await sleep(10);
+    sample();
+    assert.ok(scansSeen > 0, "the sampler saw scans run");
+    assert.ok(peak.scans <= 8, `peak scans ${peak.scans}`);
+    assert.ok(peak.handles <= 8, `peak handles ${peak.handles}`);
+    assert.ok(peak.replies <= 8, `peak replies ${peak.replies}`);
+    assert.ok(peak.descriptors <= 8, `peak descriptors ${peak.descriptors}`);
+    assert.deepEqual(feed.load(), { replies: 0, scans: 0, handles: 0 }, "all released");
+    if (openDescriptors(file) !== null) assert.equal(openDescriptors(file), 0, "no descriptor left open");
+    // The server still answers.
+    const last = await fetch(`${feed.url}?after=${lines.length - 2}`);
+    assert.equal(await last.text(), `${lines.at(-1)}\n`);
+  } finally {
+    clearInterval(sampler);
+    await feed.close();
+  }
+  await rm(home, { recursive: true, force: true });
 });
