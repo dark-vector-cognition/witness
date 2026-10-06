@@ -11,7 +11,9 @@ Thesis: one stream, many readers. Every reader writes its findings as new record
 | session | `log/<session>.jsonl` | the recorder (proxy or the witness-recorder mod) | v0.1 events plus `vote`, `grant`, `override`, `refusal` |
 | judgment | `judge/<session>.jsonl` | `witness judge` and `witness score` | `judge`, `outcome_label`, `score`, `rotation` |
 | scoreboard | `judge/j_scoreboard.jsonl` | `witness score` | `score`, `rotation`; records carry `session` `j_scoreboard` |
-| feed | `feed/refusals.jsonl` | the council mod, through `witness feed` | `feed` |
+| local feed | `feed/refusals.jsonl` | the council mod | `feed`, unsigned; records carry `session` `feed` |
+| published feed | `feed/published.jsonl` | `witness feed publish` | `feed`, signed; records carry `session` `published` |
+| remote feed | `feed/remote/<key_id>.jsonl` | `witness feed pull` | byte-exact copies of one peer's published lines that passed verification; one file per peer key |
 
 Each chain is independent: `seq` starts at 0, `prev` starts at `GENESIS`. A judgment chain names the session chain it reads through `subject`. A reader never opens a session file for writing.
 
@@ -24,6 +26,8 @@ Any record may carry `signer`:
 ```
 
 `sig` signs the raw 32 bytes of the record's `hash` (the hex string decoded), so the hash is computed first, with `signer` absent, then `signer` is attached. Verification: recompute `hash` on the record without `signer`, then check `sig` against the public key for `key_id`. Public keys live in `$WITNESS_HOME/keys/<key_id>.pub`. The private key lives in `$WITNESS_HOME/keys/<key_id>.key` (PKCS8 PEM) and never enters a record. An older v0.1 verifier hashes `signer` with the rest of the record, so it reports a hash mismatch on a signed record. A record without `signer` is unsigned, not invalid. `principal.verified` stays `false` unless a signature covers the record.
+
+`witness keygen` makes a key pair. `key_id` is `"k_"` plus the first 8 hex characters of sha256 of the public key's SPKI DER. The `key_id` is a name, not a trust anchor: a verifier checks the signature with the content of `keys/<key_id>.pub`. A chain that must be signed (the published feed and remote copies, section 5) fails on a record without `signer`, because the hash does not cover `signer` and anyone can remove it.
 
 ## 3. Session chain additions
 
@@ -141,16 +145,28 @@ Rank per event class is the ascending order of `brier` among judges with `n >= 2
 
 ### `feed`
 
-A projection of `refusal`, signed, with nothing else from the session.
+A projection of `refusal`, with nothing else from the session.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `origin` | object | `{ host_sha256, session }` |
+| `origin` | object | `{ host_sha256, session }`. `host_sha256` is the sha256 of the host name. `session` is the session that refused |
 | `indicator` | object | as in `refusal` |
 | `reason` | string | as in `refusal` |
-| `signer` | object | required on this chain |
+| `signer` | object | absent on the local chain. Required on the published chain and on every remote copy |
 
-A gate reads the feed before a vote and adds a `vote` with `judge.id` `feed`, `view` `metadata`, `p_unsafe` 1.0 and `max_caps` `[]` when a requested indicator digest matches.
+Three kinds of file hold `feed` records:
+
+1. **Local chain**, `feed/refusals.jsonl`. The council mod appends one unsigned `feed` record after each refusal. Envelope `session` is `feed`.
+2. **Published chain**, `feed/published.jsonl`. `witness feed publish` appends one signed record for each local indicator digest that is not yet published. A record is exactly `{ v: "0.2", seq, ts, session: "published", event: "feed", origin, indicator, reason, prev, hash, signer }`. Only these fields leave the machine.
+3. **Remote copies**, `feed/remote/<key_id>.jsonl`. `witness feed pull` appends the lines of one peer's published chain that pass verification, byte for byte. One file holds one peer key. `feed/remote/peers.json` maps each peer URL to its `key_id`, so the next pull asks only for `?after=<last seq>`.
+
+A published chain or a remote copy verifies when all of these hold. The file is one chain. `seq` equals the position in the file. Every record has `event` `feed` and a `signer`. `keys/<key_id>.pub` exists, holds an ed25519 key, and hashes to its `key_id`. The signature is valid. A remote copy holds only its own `key_id`.
+
+Trust: a peer is trusted only when its `.pub` is in `keys/`. The operator copies it there. There is no other path to trust.
+
+Transport: the publisher serves `GET /feed` (section 6). The server does not verify. The puller verifies every line.
+
+A gate reads the local chain and every remote copy before a vote. It adds a `vote` with `judge.id` `feed`, `view` `metadata`, `p_unsafe` 1.0 and `max_caps` `[]` when a requested indicator digest matches. The gate does not verify signatures again, because pull verified them. A forged remote entry can cause a refusal, not a run.
 
 ## 6. CLI contracts
 
@@ -163,13 +179,58 @@ witness score [--since 30d] [--half-life 14d] [--json]
     Compute outcome_label, score and rotation records for every session with a judgment chain.
     Print a leaderboard: judge_id, event_class, n, brier, rank, role.
 
-witness feed publish [--key k]      Append every new refusal as a feed record.
-witness feed pull <url>             Append remote feed records after signature check.
-witness feed match <sha256>         Exit 0 when an indicator is present.
+witness keygen
+    Make an ed25519 key pair: keys/<key_id>.key (PKCS8 PEM) and keys/<key_id>.pub (SPKI PEM).
+    key_id = "k_" + the first 8 hex characters of sha256(SPKI DER). Print the key_id. Never overwrite a key.
+    Exit 0 ok, 1 error.
+
+witness feed publish --key <key_id>
+    Verify feed/refusals.jsonl and feed/published.jsonl. If either is broken, publish nothing and exit 3.
+    For every local feed record whose indicator.sha256 is not yet in published.jsonl, append one signed record.
+    A second run appends nothing. Print the count appended.
+    Exit 0 ok, 1 error (for example a missing key, or a .key or .pub that does not hash to key_id), 3 broken chain.
+
+witness feed serve [--host 127.0.0.1] [--port 7480]
+    Read-only HTTP, bound only to --host. Print {"listen": "<url>", "file": "<published.jsonl>"}.
+    GET /feed            published.jsonl as application/x-ndjson, bytes as stored.
+    GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send every byte after them.
+    Missing published.jsonl: 200 with an empty body. A last line with no newline is held back.
+    A bad after value: 400. Another method on /feed: 405 with Allow: GET. Every other path: 404. No write endpoint.
+
+witness feed pull <url>
+    url is a peer's /feed endpoint. Ask for ?after=<last seq in the local copy of that peer>; a new peer gets no after.
+    Check each returned line, in order: valid UTF-8 and JSON; event "feed"; signer present; the same key_id as the
+    peer and as every other line; keys/<key_id>.pub present, ed25519, and hashing to key_id; hash recomputes with
+    signer removed; signature valid; seq and prev continue the local copy (seq 0 and prev GENESIS for a new peer);
+    indicator.kind and indicator.sha256 present.
+    Append each line that passes, byte for byte, to feed/remote/<key_id>.jsonl.
+    At the first line that fails: keep the lines before it, append nothing after it, print the reason, exit 3.
+    Network or file errors: exit 1. Success: print the count, exit 0.
+    The reply is capped at 32 MiB and 30 seconds. To accept a new key at a known URL, remove the URL from remote/peers.json.
+
+witness feed match <sha256>
+    Look in feed/refusals.jsonl, feed/published.jsonl and every feed/remote/*.jsonl.
+    Exit 0 when found (print each file and the indicator kind), 1 when not found,
+    2 on a malformed <sha256>, a feed file that cannot be read, or a line that does not parse. An error wins over a hit.
+
+witness verify [file|dir]
+    A feed file is one chain with seq equal to its position. published.jsonl and remote/*.jsonl need a trusted signer
+    on every record, and a remote copy holds only its own key_id. witness verify <home>/feed also walks feed/remote/.
+```
+
+Files under `$WITNESS_HOME` for keys and the feed. Directories are 0700 and files 0600.
+
+```
+keys/<key_id>.key            ed25519 private key, PKCS8 PEM. Never leaves the machine.
+keys/<key_id>.pub            ed25519 public key, SPKI PEM. A peer's .pub here makes that peer trusted.
+feed/refusals.jsonl          local feed chain (the council mod)
+feed/published.jsonl         signed feed chain (witness feed publish)
+feed/remote/<key_id>.jsonl   verified copy of one peer's published chain (witness feed pull)
+feed/remote/peers.json       peer URL to key_id (witness feed pull)
 ```
 
 Model calls go through one adapter interface in `lib/judge.mjs`: `judgeAdapter({ model, vendor }) -> async (records) -> { verdict, findings }`. The first adapters: `anthropic` (API key from `ANTHROPIC_API_KEY`), `openrouter` (`OPENROUTER_API_KEY`), `ollama` (`OLLAMA_HOST`, metadata view only), and `stub` for tests. No adapter stores a key in a record.
 
 ## 7. What v0.2 does not claim
 
-A judge can be wrong. A judge can be injected if its view is `full`. The feed trusts whoever holds a key. The score is only as good as the outcome labels, and the labels come from the stream, which is only as complete as what was wrapped. Term limits bound exposure; they do not remove it.
+A judge can be wrong. A judge can be injected if its view is `full`. The feed trusts whoever holds a key. A peer can withhold new records, and a puller cannot tell. The feed has no TLS and no authentication of its own. The score is only as good as the outcome labels, and the labels come from the stream, which is only as complete as what was wrapped. Term limits bound exposure; they do not remove it.
