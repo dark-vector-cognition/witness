@@ -1037,3 +1037,55 @@ test("round 3 item 7: serve refuses a link only at the last path component, and 
   }
   for (const h of [home, elsewhere]) await rm(h, { recursive: true, force: true });
 });
+
+// Review round 4 (CODEX-REVIEW-7-feed). One test per finding.
+
+// Run the CLI and kill it after ms. A serve that starts instead of exiting shows up as code null.
+function runFor(args, env, ms = 5000) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [bin, ...args], { env: { ...process.env, ...env } });
+    let out = ""; let err = "";
+    p.stdout.on("data", (c) => { out += c; }); p.stderr.on("data", (c) => { err += c; });
+    const timer = setTimeout(() => p.kill("SIGKILL"), ms);
+    p.on("exit", (code) => { clearTimeout(timer); resolve({ code, out, err }); });
+  });
+}
+
+test("round 4 item 1: serve refuses an empty host and every-interface hosts unless --any-interface is given", async () => {
+  const home = await tempHome();
+  const env = { WITNESS_HOME: home };
+  const refused = [
+    ["", /--host must be a host name or an address, not ""/],
+    ["  ", /--host must be a host name or an address, not " {2}"/],
+    ["0.0.0.0", /--host "0\.0\.0\.0" means every interface \(0\.0\.0\.0\)\. Pass --any-interface/],
+    ["::", /--host "::" means every interface \(::\)\. Pass --any-interface/],
+    ["[::]", /--host "\[::\]" means every interface/],
+    ["0", /--host "0" means every interface \(0\.0\.0\.0\)/],
+    ["0x0", /--host "0x0" means every interface \(0\.0\.0\.0\)/],
+  ];
+  for (const [host, reason] of refused) {
+    const result = await runFor(["feed", "serve", "--host", host, "--port", "0"], env);
+    assert.equal(result.code, 1, `${JSON.stringify(host)}: ${result.out}${result.err}`);
+    assert.match(result.err, reason, JSON.stringify(host));
+    assert.equal(result.out, "", `${JSON.stringify(host)}: nothing listens`);
+  }
+  // The library refuses a host that is not a string.
+  await assert.rejects(startFeedServer({ home, host: 5, port: 0 }), /--host must be a host name or an address, not 5/);
+  await assert.rejects(startFeedServer({ home, host: "0.0.0.0", port: 0 }), /Pass --any-interface/);
+  // With the explicit flag, every interface is allowed.
+  const any = await startFeedServer({ home, host: "0.0.0.0", port: 0, anyInterface: true });
+  try {
+    assert.equal(any.host, "0.0.0.0");
+    assert.equal((await fetch(`http://127.0.0.1:${any.port}/feed`)).status, 200);
+  } finally {
+    await any.close();
+  }
+  const cli = await runFor(["feed", "serve", "--host", "0.0.0.0", "--port", "0", "--any-interface"], env, 1500);
+  assert.equal(cli.code, null, "it serves until it is stopped");
+  assert.match(cli.out, /"listen":"http:\/\/0\.0\.0\.0:\d+\/feed"/);
+  assert.match(cli.err, /0\.0\.0\.0 is not a loopback address/);
+  // The default stays 127.0.0.1.
+  const plain = await startFeedServer({ home, port: 0 });
+  try { assert.equal(plain.host, "127.0.0.1"); } finally { await plain.close(); }
+  await rm(home, { recursive: true, force: true });
+});

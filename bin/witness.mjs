@@ -41,7 +41,8 @@ function usage(code = 0) {
   witness score [--since 30d] [--half-life 14d] [--json]  Label every call, Brier-score each judge, append to judge/. Prints judge_id, event_class, n, brier, rank, role.
   witness keygen                Make an ed25519 key pair in keys/. Prints the key_id. Never overwrites a key.
   witness feed publish --key <key_id>   Sign every new local refusal indicator into feed/published.jsonl. Exit 0 ok, 1 error, 3 broken chain.
-  witness feed serve [--host 127.0.0.1] [--port 7480]   Read-only HTTP: GET /feed and GET /feed?after=<seq>. Nothing else.
+  witness feed serve [--host 127.0.0.1] [--port 7480] [--any-interface]   Read-only HTTP: GET /feed and GET /feed?after=<seq>. Nothing else.
+                                --host 0.0.0.0 or :: (every interface) needs --any-interface. An empty --host is refused.
   witness feed pull <url>       Verify a peer's /feed and append it to feed/remote/<key_id>.jsonl. Exit 0 ok, 1 error, 3 bad line.
   witness feed match <sha256>   Exit 0 when an indicator digest is in any feed file, 1 when not, 2 on an error.
 
@@ -175,7 +176,7 @@ if (argv[0] === "feed") {
     const port = Number(opt("--port", String(DEFAULT_PORT)));
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(new Error("--port must be an integer from 0 to 65535"));
     try {
-      const feed = await startFeedServer({ host, port, onWarn: (message) => process.stderr.write(`[witness] ${message}\n`) });
+      const feed = await startFeedServer({ host, port, anyInterface: argv.includes("--any-interface"), onWarn: (message) => process.stderr.write(`[witness] ${message}\n`) });
       process.stdout.write(`${JSON.stringify({ listen: feed.url, file: feed.file })}\n`);
       process.stderr.write(`[witness] serving ${feed.file} read-only at ${feed.url}. Ctrl-C to stop.\n`);
       if (!/^(127\.|::1$)/.test(feed.host)) process.stderr.write(`[witness] ${feed.host} is not a loopback address. Every host that can reach it can read the feed.\n`);

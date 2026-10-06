@@ -193,8 +193,10 @@ witness feed publish --key <key_id>
     A second run appends nothing. Print the count appended.
     Exit 0 ok, 1 error (for example a missing key, or a .key or .pub that does not hash to key_id), 3 broken chain.
 
-witness feed serve [--host 127.0.0.1] [--port 7480]
+witness feed serve [--host 127.0.0.1] [--port 7480] [--any-interface]
     Read-only HTTP, bound only to --host. Print {"listen": "<url>", "file": "<published.jsonl>"}.
+    --host is resolved first, and serve binds that one address. An empty, whitespace or non-string host: exit 1.
+    A host that resolves to every interface (0.0.0.0, ::, [::], "0"): exit 1, unless --any-interface is given too.
     GET /feed            published.jsonl as application/x-ndjson, bytes as stored.
     GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send the bytes after them.
     A reply holds whole lines only, at most 32 MiB. A last line with no newline is held back. Pull again for the rest.
