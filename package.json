@@ -36,12 +36,15 @@
     "./session-log": "./lib/session-log.mjs",
     "./analyze": "./lib/analyze.mjs",
     "./wrap": "./lib/wrap.mjs",
+    "./judge": "./lib/judge.mjs",
+    "./score": "./lib/score.mjs",
     "./package.json": "./package.json"
   },
   "files": [
     "bin",
     "lib",
     "SPEC.md",
+    "SPEC-0.2.md",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
