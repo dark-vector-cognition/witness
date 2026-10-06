@@ -87,7 +87,7 @@ Node.js 22.13 or later. No install step.
 ```bash
 git clone https://github.com/dark-vector-cognition/witness && cd witness
 node bin/witness.mjs --help
-npm test     # ~20 seconds, no build
+npm test     # ~25 seconds, no build
 ```
 
 ## Contributing
