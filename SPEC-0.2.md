@@ -226,6 +226,9 @@ witness feed pull <url>
     At the first line that fails or differs: keep the new lines before it, append nothing after it, print the reason, exit 3.
     Network or file errors, a redirect, or a status other than 200: exit 1. Success: print the count, exit 0.
     The URL is bound to the key when the reply adds lines to the copy or repeats it without a difference.
+    The append and the binding run under one exclusive lock per home, remote/peers.json.lock. Under it, pull reads
+    peers.json again. If the URL is now bound to another key_id: exit 3, nothing appended, nothing bound.
+    A lock that stays taken for about 1 second: exit 1, nothing changed.
     The reply is capped at 32 MiB and 30 seconds. To accept a new key at a known URL, remove the URL from remote/peers.json.
 
 witness feed match <sha256>

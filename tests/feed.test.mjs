@@ -1179,3 +1179,53 @@ test("round 4 item 4: invalid UTF-8 fails the file: match 2, publish 3, verify 1
   await assert.rejects(pullFeed({ url, home: fresh, fetchImpl: answer(Buffer.concat([Buffer.from(`${second[0]}\n`), withFF(Buffer.from(`${line}\n`))])) }), (error) => error.exitCode === 3 && /line 2 of the reply is not valid UTF-8/.test(error.message) && error.appended === 1);
   for (const h of [home, peer, fresh]) await rm(h, { recursive: true, force: true });
 });
+
+test("round 4 item 2: two pulls at once keep both bindings; a URL bound to another key meanwhile is a conflict", async () => {
+  const homes = { a: await tempHome(), b: await tempHome() };
+  const keys = { a: keygen(homes.a).keyId, b: keygen(homes.b).keyId };
+  for (const side of ["a", "b"]) { writeLocalFeed(homes[side], [`doc ${side}`]); publishFeed({ keyId: keys[side], home: homes[side] }); }
+  const feeds = { a: await startFeedServer({ home: homes.a, port: 0 }), b: await startFeedServer({ home: homes.b, port: 0 }) };
+  try {
+    // The review trigger, five times: pulls for URLs A and B run at once against one home.
+    for (let round = 0; round < 5; round += 1) {
+      const client = await tempHome();
+      trust(homes.a, client, keys.a);
+      trust(homes.b, client, keys.b);
+      const [ra, rb] = await Promise.all([run(["feed", "pull", feeds.a.url], { WITNESS_HOME: client }), run(["feed", "pull", feeds.b.url], { WITNESS_HOME: client })]);
+      assert.equal(ra.code, 0, `round ${round} a: ${ra.err}`);
+      assert.equal(rb.code, 0, `round ${round} b: ${rb.err}`);
+      assert.deepEqual(JSON.parse(readFileSync(feedPaths(client).peers, "utf8")), { [feeds.a.url]: keys.a, [feeds.b.url]: keys.b }, `round ${round}: both bindings survive`);
+      for (const side of ["a", "b"]) assert.deepEqual(readFileSync(remoteFile(keys[side], client)), readFileSync(feedPaths(homes[side]).published));
+      await rm(client, { recursive: true, force: true });
+    }
+    // A conflict: while this pull waits for its reply, another pull binds the same URL to key a.
+    const client = await tempHome();
+    trust(homes.a, client, keys.a);
+    trust(homes.b, client, keys.b);
+    const url = "http://shared.test/feed";
+    const peers = feedPaths(client).peers;
+    const racing = async () => {
+      mkdirSync(path.dirname(peers), { recursive: true });
+      writeFileSync(peers, `${JSON.stringify({ [url]: keys.a })}\n`);
+      return new Response(readFileSync(feedPaths(homes.b).published), { status: 200 });
+    };
+    await assert.rejects(pullFeed({ url, home: client, fetchImpl: racing }), (error) => {
+      assert.equal(error.exitCode, 3);
+      assert.match(error.message, new RegExp(`is bound to ${keys.a} in .*peers\\.json, but this reply is signed by ${keys.b}\\. Nothing changed\\.`));
+      return true;
+    });
+    assert.equal(existsSync(remoteFile(keys.b, client)), false, "nothing appended");
+    assert.deepEqual(JSON.parse(readFileSync(peers, "utf8")), { [url]: keys.a }, "the binding is unchanged");
+    // A held lock stops the pull, and nothing changes.
+    mkdirSync(`${peers}.lock`);
+    const locked = await run(["feed", "pull", feeds.b.url], { WITNESS_HOME: client });
+    assert.equal(locked.code, 1);
+    assert.match(locked.err, /chain is locked: .*peers\.json\.lock/);
+    assert.equal(existsSync(remoteFile(keys.b, client)), false);
+    await rm(client, { recursive: true, force: true });
+  } finally {
+    await feeds.a.close();
+    await feeds.b.close();
+  }
+  for (const h of Object.values(homes)) await rm(h, { recursive: true, force: true });
+});
