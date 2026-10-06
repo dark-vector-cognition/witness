@@ -871,3 +871,25 @@ test("round 3 item 5: a whitespace-only or empty line is a bad line in verify, m
   assert.equal((await run(["verify", path.join(home, "feed")], { WITNESS_HOME: home })).code, 0);
   for (const h of [home, peer]) await rm(h, { recursive: true, force: true });
 });
+
+test("round 3 item 4: publish exits 3 and appends nothing when published.jsonl does not end with a newline", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  writeLocalFeed(home, ["doc a"]);
+  publishFeed({ keyId, home });
+  const paths = feedPaths(home);
+  // The review trigger: the final LF of a complete signed record is gone, and a new local indicator waits.
+  const cut = readFileSync(paths.published, "utf8").replace(/\n$/, "");
+  writeFileSync(paths.published, cut);
+  writeLocalFeed(home, ["doc b"]);
+  const result = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(result.code, 3, result.err);
+  assert.match(result.err, /published\.jsonl does not end with a newline\. Nothing published\./);
+  assert.equal(readFileSync(paths.published, "utf8"), cut, "nothing appended");
+  // With the newline back, publish appends the new record, and a second run appends nothing.
+  writeFileSync(paths.published, `${cut}\n`);
+  assert.equal(publishFeed({ keyId, home }).appended, 1);
+  assert.equal(publishFeed({ keyId, home }).appended, 0);
+  assert.equal(verifyFeedChain(readLines(paths.published).map((line) => JSON.parse(line)), { signed: true, home }).ok, true);
+  await rm(home, { recursive: true, force: true });
+});
