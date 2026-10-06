@@ -38,6 +38,7 @@
     "./wrap": "./lib/wrap.mjs",
     "./judge": "./lib/judge.mjs",
     "./score": "./lib/score.mjs",
+    "./keys": "./lib/keys.mjs",
     "./package.json": "./package.json"
   },
   "files": [

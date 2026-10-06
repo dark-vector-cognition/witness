@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
+import { keygen } from "../lib/keys.mjs";
 import { runProxy } from "../lib/proxy.mjs";
 import { runScore } from "../lib/score.mjs";
 import { candidateConfigs, rewriteConfig } from "../lib/wrap.mjs";
@@ -37,6 +38,7 @@ function usage(code = 0) {
   witness anchor [--git]        Append every chain head to checkpoints.jsonl (chained); --git commits it in WITNESS_HOME.
   witness judge <session|file> [--vendor anthropic|openrouter|ollama|stub] [--model m] [--key k] [--json]  Fresh-model review (metadata view) to judge/<session>.jsonl. Exit 0 clean, 2 flagged, 3 tampered, 1 error.
   witness score [--since 30d] [--half-life 14d] [--json]  Label every call, Brier-score each judge, append to judge/. Prints judge_id, event_class, n, brier, rank, role.
+  witness keygen                Make an ed25519 key pair in keys/. Prints the key_id. Never overwrites a key.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -134,6 +136,18 @@ if (argv[0] === "judge") {
     process.exit(EXIT_CODES[record.verdict] ?? 1);
   } catch (error) {
     process.stderr.write(`witness judge: ${error.message}\n`);
+    process.exit(1);
+  }
+}
+
+if (argv[0] === "keygen") {
+  try {
+    const { keyId, keyFile, pubFile } = keygen();
+    process.stdout.write(`${keyId}\n`);
+    process.stderr.write(`[witness] wrote ${keyFile} and ${pubFile}. Give peers the .pub file. The .key file never leaves this machine.\n`);
+    process.exit(0);
+  } catch (error) {
+    process.stderr.write(`witness keygen: ${error.message}\n`);
     process.exit(1);
   }
 }
