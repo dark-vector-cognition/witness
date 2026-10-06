@@ -14,7 +14,7 @@ Witness is local-only, with two exceptions. Each exception happens only when you
 
 ## Exception 2: `witness feed serve` exposes the published feed over HTTP
 
-- It serves `feed/published.jsonl` over plain HTTP, with no authentication and no TLS, on the address you give with `--host`. It never reads through a symbolic link or a hard link, so it cannot serve another file such as a private key. The default is `127.0.0.1`, which only this machine can reach. With any other address, every host that can reach that address can read the feed.
+- It serves `feed/published.jsonl` over plain HTTP, with no authentication and no TLS, on the address you give with `--host`. It refuses `published.jsonl` when that name itself is a symbolic link or a hard link, so a link there cannot expose another file such as a private key. This check covers only the last path component. A link at `feed/` or above is followed, and the server then serves the `published.jsonl` that it finds there. Only a user who can write `WITNESS_HOME` can make such a link. The default is `127.0.0.1`, which only this machine can reach. With any other address, every host that can reach that address can read the feed.
 - What it exposes, for each refused call: the indicator kind and digest (`indicator.sha256`), the reason text (at most 240 characters, written by the council), `origin.host_sha256`, `origin.session`, the timestamp, and the signer's `key_id` and signature.
 - `origin.host_sha256` is a plain sha256 of the host name. Anyone can recover a host name that is easy to guess from its digest. The same is true for an indicator digest of a short or common value, such as a domain or a tool name.
 - A reason is free text. Read `feed/published.jsonl` before you serve it.

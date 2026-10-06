@@ -1008,3 +1008,32 @@ test("round 3 item 2: 40 clients that leave mid-scan never hold more than 8 scan
   }
   await rm(home, { recursive: true, force: true });
 });
+
+test("round 3 item 7: serve refuses a link only at the last path component, and README and PRIVACY say so", async () => {
+  const home = await tempHome();
+  const elsewhere = await tempHome();
+  // feed/ is a link to another directory that holds a regular published.jsonl. The limit in the docs: it is followed.
+  writeFileSync(path.join(elsewhere, "published.jsonl"), '{"seq":0}\n');
+  symlinkSync(elsewhere, path.join(home, "feed"));
+  const feed = await startFeedServer({ home, port: 0 });
+  try {
+    const followed = await fetch(feed.url);
+    assert.equal(followed.status, 200);
+    assert.equal(await followed.text(), '{"seq":0}\n', "a link at feed/ is followed");
+    // A link at the last path component is refused.
+    rmSync(path.join(elsewhere, "published.jsonl"));
+    writeFileSync(path.join(elsewhere, "target.jsonl"), '{"seq":0}\n');
+    symlinkSync("target.jsonl", path.join(elsewhere, "published.jsonl"));
+    assert.equal((await fetch(feed.url)).status, 500);
+  } finally {
+    await feed.close();
+  }
+  const readme = readFileSync(new URL("../README.md", import.meta.url), "utf8");
+  const privacy = readFileSync(new URL("../docs/PRIVACY.md", import.meta.url), "utf8");
+  for (const [name, text] of [["README.md", readme], ["docs/PRIVACY.md", privacy]]) {
+    assert.doesNotMatch(text, /never reads through/, `${name} makes no claim wider than the code`);
+    assert.match(text, /when that name itself is a symbolic link or a hard link/, `${name} names the last path component`);
+    assert.match(text, /link at `feed\/` or above is followed|follows a link at `feed\/` or above/, `${name} states the ancestor-link limit`);
+  }
+  for (const h of [home, elsewhere]) await rm(h, { recursive: true, force: true });
+});

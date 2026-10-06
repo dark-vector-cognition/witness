@@ -160,7 +160,9 @@ Three kinds of file hold `feed` records:
 2. **Published chain**, `feed/published.jsonl`. `witness feed publish` appends one signed record for each local indicator digest that is not yet published. A record is exactly `{ v: "0.2", seq, ts, session: "published", event: "feed", origin, indicator, reason, prev, hash, signer }`. Only these fields leave the machine.
 3. **Remote copies**, `feed/remote/<key_id>.jsonl`. `witness feed pull` appends the lines of one peer's published chain that pass verification, byte for byte. One file holds one peer key. `feed/remote/peers.json` maps each peer URL to its `key_id`, so the next pull asks only for `?after=<last seq>`.
 
-A published chain or a remote copy verifies when all of these hold. The file is one chain. `seq` equals the position in the file. Every record has `event` `feed` and a `signer`. `keys/<key_id>.pub` exists, holds an ed25519 key, and hashes to its `key_id`. The signature is valid. A remote copy holds only its own `key_id`.
+In every feed file, an empty or whitespace-only line is a bad line. An empty file is an empty chain, and the empty element after a final newline is not a line.
+
+A published chain or a remote copy verifies when all of these hold. The file is one chain. `seq` equals the position in the file. Every record has `event` `feed` and a `signer`. `keys/<key_id>.pub` exists, holds an ed25519 key, and hashes to its `key_id`. The signature is valid. A remote copy is named exactly `<key_id>.jsonl`, with `key_id` matching `k_` and 8 lowercase hex characters, and every record's `signer.key_id` equals that `key_id`. Any other `*.jsonl` name in `feed/remote/`, also `.jsonl`, fails verification, also when the file is empty.
 
 Trust: a peer is trusted only when its `.pub` is in `keys/`. The operator copies it there. There is no other path to trust.
 
@@ -186,6 +188,7 @@ witness keygen
 
 witness feed publish --key <key_id>
     Verify feed/refusals.jsonl and feed/published.jsonl. If either is broken, publish nothing and exit 3.
+    A non-empty published.jsonl that does not end with a newline is broken too: exit 3, nothing appended.
     For every local feed record whose indicator.sha256 is not yet in published.jsonl, append one signed record.
     A second run appends nothing. Print the count appended.
     Exit 0 ok, 1 error (for example a missing key, or a .key or .pub that does not hash to key_id), 3 broken chain.
@@ -196,14 +199,18 @@ witness feed serve [--host 127.0.0.1] [--port 7480]
     GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send the bytes after them.
     A reply holds whole lines only, at most 32 MiB. A last line with no newline is held back. Pull again for the rest.
     published.jsonl is opened with O_NOFOLLOW and O_NONBLOCK. It must be a regular file with one hard link.
+    O_NOFOLLOW checks only the last path component: a link at feed/ or above is followed.
     A symbolic link, a hard link, a directory or a FIFO gives 500 and no file bytes. Missing published.jsonl: 200, empty body.
     The reply is streamed with backpressure; the file is never read whole into memory.
-    At most 8 replies at once; another request gets 503 with Retry-After: 1.
+    At most 8 replies at once; another request gets 503 with Retry-After: 1. A slot is given back only when its
+    scan, its stream and its file handle are done. When the client leaves, the scan stops at its next chunk.
     A socket with no traffic for 30 seconds is destroyed. A request must arrive in 30 seconds.
     A bad after value: 400. Another method on /feed: 405 with Allow: GET. Every other path: 404. No write endpoint.
 
 witness feed pull <url>
     url is a peer's /feed endpoint. Send exactly one GET, with no body, and follow no redirect.
+    First read remote/peers.json. Only ENOENT means no bindings. Any other read error, text that is not a JSON object,
+    or a value that is not a key_id: exit 1, with no request and no change.
     A URL bound in remote/peers.json to a local copy gets ?after=<last seq of that copy>. Every line of the reply is new.
     Any other URL gets no after, so the reply starts at seq 0. When its first line names a key_id that has a local
     copy, the first lines of the reply must be byte-identical to the lines of that copy. The lines after them are new.
@@ -223,14 +230,17 @@ witness feed match <sha256>
       refusals.jsonl          a valid chain
       published.jsonl         a valid chain, every record signed by a trusted key in keys/
       remote/<key_id>.jsonl   a valid chain, every record signed by keys/<key_id>.pub, signer.key_id equal to the file name
-    Only ENOENT means a missing file or directory.
+    Every *.jsonl name in feed/remote/ counts. A name that is not exactly <key_id>.jsonl does not verify.
+    A blank line does not parse. Only ENOENT means a missing file or directory.
     Exit 0 when found (print each file and the indicator kind), 1 when not found,
     2 on a malformed <sha256>, a file or directory that cannot be read, a line that does not parse, or a file that
     does not verify. An error wins over a hit.
 
 witness verify [file|dir]
     A feed file is one chain with seq equal to its position. published.jsonl and remote/*.jsonl need a trusted signer
-    on every record, and a remote copy holds only its own key_id. witness verify <home>/feed also walks feed/remote/.
+    on every record, and a remote copy holds only its own key_id and is named exactly <key_id>.jsonl.
+    A feed file is read with the strict feed parser: a blank or unparseable line is a FAIL.
+    witness verify <home>/feed also walks feed/remote/.
 ```
 
 Files under `$WITNESS_HOME` for keys and the feed. Directories are 0700 and files 0600.
