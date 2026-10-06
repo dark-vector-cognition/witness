@@ -620,3 +620,19 @@ test("review 6, match: only ENOENT means missing; any other read error exits 2",
   }
   await rm(home, { recursive: true, force: true });
 });
+
+test("review 5, publish: a local last line with no newline is verified; a broken one exits 3 and publishes nothing", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  writeLocalFeed(home, ["doc a"]);
+  const paths = feedPaths(home);
+  appendFileSync(paths.local, "{broken");
+  const broken = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(broken.code, 3, broken.err);
+  assert.match(broken.err, /refusals\.jsonl line 2 is not a JSON object/);
+  assert.equal(existsSync(paths.published), false, "nothing published");
+  // A whole record whose newline is not written yet is a valid line.
+  writeFileSync(paths.local, readFileSync(paths.local, "utf8").replace("{broken", "").replace(/\n$/, ""));
+  assert.equal(publishFeed({ keyId, home }).appended, 1);
+  await rm(home, { recursive: true, force: true });
+});
