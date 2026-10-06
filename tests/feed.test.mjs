@@ -293,27 +293,32 @@ test("pull: unknown key, bad signature, edited byte, seq gap, mixed key_id and m
 
 test("match: exit 0 when found in any feed file, 1 when not found, 2 on a bad argument, unreadable file or unparseable line", async () => {
   const home = await tempHome();
+  const peer = await tempHome();
   const { keyId } = keygen(home);
+  const peerKey = keygen(peer).keyId;
+  trust(peer, home, peerKey);
   const [digest] = writeLocalFeed(home, ["doc a"]);
   publishFeed({ keyId, home });
   const paths = feedPaths(home);
+  const copy = path.join(paths.remote, `${peerKey}.jsonl`);
+  mkdirSync(paths.remote, { recursive: true });
+  // A real remote copy: signed by the peer key, file named for that key. Its first record indicates sha256("doc 0").
+  writeFileSync(copy, signedLines(peer, [{ key: peerKey }, { key: peerKey }]).map((line) => `${line}\n`).join(""));
   const match = (arg) => run(["feed", "match", ...(arg === undefined ? [] : [arg])], { WITNESS_HOME: home });
   assert.equal((await match(sha256("doc a"))).code, 0);
   const hit = await match(digest.toUpperCase());
   assert.equal(hit.code, 0);
   assert.deepEqual(hit.out.trim().split("\n"), [`${paths.local}  document`, `${paths.published}  document`]);
-  mkdirSync(paths.remote, { recursive: true });
-  writeFileSync(path.join(paths.remote, "k_0000beef.jsonl"), `${JSON.stringify({ indicator: { kind: "domain", sha256: sha256("evil.example") } })}\n`);
-  const remote = await match(sha256("evil.example"));
-  assert.deepEqual([remote.code, remote.out.trim()], [0, `${path.join(paths.remote, "k_0000beef.jsonl")}  domain`]);
+  const remote = await match(sha256("doc 0"));
+  assert.deepEqual([remote.code, remote.out.trim()], [0, `${copy}  document`]);
   assert.equal((await match(sha256("nothing"))).code, 1);
   assert.equal((await match("xyz")).code, 2);
   assert.equal((await match(undefined)).code, 2);
-  appendFileSync(path.join(paths.remote, "k_0000beef.jsonl"), "{broken\n");
+  appendFileSync(copy, "{broken\n");
   const unparseable = await match(digest);
   assert.equal(unparseable.code, 2, "an error wins over a hit");
-  assert.match(unparseable.err, /k_0000beef\.jsonl line 2 does not parse/);
-  await rm(path.join(paths.remote, "k_0000beef.jsonl"));
+  assert.match(unparseable.err, new RegExp(`${peerKey}\\.jsonl line 3 is not a JSON object`));
+  await rm(copy);
   await rm(paths.published);
   mkdirSync(paths.published);
   const unreadable = await match(digest);
@@ -321,8 +326,7 @@ test("match: exit 0 when found in any feed file, 1 when not found, 2 on a bad ar
   assert.match(unreadable.err, /published\.jsonl cannot be read \(EISDIR\)/);
   const blank = await tempHome();
   assert.equal((await run(["feed", "match", digest], { WITNESS_HOME: blank })).code, 1, "no feed files is not found");
-  await rm(blank, { recursive: true, force: true });
-  await rm(home, { recursive: true, force: true });
+  for (const h of [blank, home, peer]) await rm(h, { recursive: true, force: true });
 });
 
 test("verify: accepts published.jsonl and remote copies as signed chains, and rejects stripped signers and a mixed copy", async () => {
@@ -544,6 +548,75 @@ test("review 2, serve: streams with backpressure, caps 8 concurrent replies, des
     assert.equal(await (await fetch(`${capped.url}?after=2`)).text(), body(small.slice(3, 6)));
   } finally {
     await capped.close();
+  }
+  await rm(home, { recursive: true, force: true });
+});
+
+test("review 3, match: a hit counts only from a file that verifies", async () => {
+  const home = await tempHome();
+  const peer = await tempHome();
+  const { keyId } = keygen(home);
+  const peerKey = keygen(peer).keyId;
+  const otherKey = keygen(peer).keyId;
+  const strangerKey = keygen(peer).keyId;
+  trust(peer, home, peerKey);
+  trust(peer, home, otherKey);
+  const paths = feedPaths(home);
+  const target = sha256("doc 0");
+  const reset = () => { rmSync(paths.dir, { recursive: true, force: true }); mkdirSync(paths.remote, { recursive: true }); };
+  const sealedUnsigned = () => { const r = sealRecord({ v: "0.2", seq: 0, ts: "2026-10-06T12:00:00.000Z", session: "published", event: "feed", origin: null, indicator: { kind: "document", sha256: target }, reason: "r" }, GENESIS); return JSON.stringify(r); };
+  const cases = [
+    ["a forged remote line", () => writeFileSync(path.join(paths.remote, "k_0000beef.jsonl"), body([JSON.stringify({ indicator: { kind: "document", sha256: target } })])), /k_0000beef\.jsonl does not verify/],
+    ["a remote copy under another key's name", () => writeFileSync(path.join(paths.remote, `${otherKey}.jsonl`), body(signedLines(peer, [{ key: peerKey }]))), new RegExp(`signer ${peerKey} at seq 0 in the copy of ${otherKey}`)],
+    ["a remote copy by an untrusted key", () => writeFileSync(path.join(paths.remote, `${strangerKey}.jsonl`), body(signedLines(peer, [{ key: strangerKey }]))), /no public key/],
+    ["an unsigned published.jsonl", () => writeFileSync(paths.published, body([sealedUnsigned()])), /published\.jsonl does not verify: missing signer at seq 0/],
+    ["a published.jsonl signed by an untrusted key", () => writeFileSync(paths.published, body(signedLines(peer, [{ key: strangerKey }]))), /published\.jsonl does not verify: no public key/],
+    ["a tampered refusals.jsonl", () => { writeLocalFeed(home, ["doc 0"]); writeFileSync(paths.local, readFileSync(paths.local, "utf8").replace("Call refused", "Call refuseD")); }, /refusals\.jsonl does not verify: hash mismatch at seq 0/],
+    ["a record nested too deep to hash", () => writeFileSync(paths.local, `{"seq":0,"prev":"GENESIS","hash":"0","indicator":{"kind":"document","sha256":"${target}"},"deep":${"[".repeat(10000)}${"]".repeat(10000)}}\n`), /refusals\.jsonl does not verify: cannot be checked \(RangeError/],
+  ];
+  for (const [name, make, reason] of cases) {
+    reset();
+    make();
+    const result = await run(["feed", "match", target], { WITNESS_HOME: home });
+    assert.equal(result.code, 2, `${name}: ${result.out}${result.err}`);
+    assert.match(result.err, reason, name);
+  }
+  // The same digest from files that verify: a hit.
+  reset();
+  writeLocalFeed(home, ["doc 0"]);
+  publishFeed({ keyId, home });
+  writeFileSync(path.join(paths.remote, `${peerKey}.jsonl`), body(signedLines(peer, [{ key: peerKey }])));
+  const good = await run(["feed", "match", target], { WITNESS_HOME: home });
+  assert.equal(good.code, 0, good.err);
+  assert.equal(good.out.trim().split("\n").length, 3);
+  for (const h of [home, peer]) await rm(h, { recursive: true, force: true });
+});
+
+test("review 6, match: only ENOENT means missing; any other read error exits 2", async () => {
+  const home = await tempHome();
+  const [digest] = writeLocalFeed(home, ["doc a"]);
+  const paths = feedPaths(home);
+  const match = () => run(["feed", "match", digest], { WITNESS_HOME: home });
+  assert.equal((await match()).code, 0, "no remote/ and no published.jsonl: ENOENT is missing");
+  writeFileSync(paths.remote, "not a directory");
+  const notDir = await match();
+  assert.equal(notDir.code, 2);
+  assert.match(notDir.err, /remote cannot be read \(ENOTDIR\)/);
+  rmSync(paths.remote);
+  mkdirSync(path.join(paths.remote, "k_0000beef.jsonl"), { recursive: true });
+  const isDir = await match();
+  assert.equal(isDir.code, 2);
+  assert.match(isDir.err, /k_0000beef\.jsonl cannot be read \(EISDIR\)/);
+  rmSync(paths.remote, { recursive: true });
+  if (process.getuid?.() !== 0) {
+    // The review trigger needs a user without root: remote/ that can be listed but not entered.
+    mkdirSync(paths.remote);
+    writeFileSync(path.join(paths.remote, "k_0000beef.jsonl"), "");
+    chmodSync(paths.remote, 0o600);
+    const denied = await match();
+    chmodSync(paths.remote, 0o700);
+    assert.equal(denied.code, 2);
+    assert.match(denied.err, /EACCES/);
   }
   await rm(home, { recursive: true, force: true });
 });
