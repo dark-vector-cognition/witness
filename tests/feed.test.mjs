@@ -359,7 +359,7 @@ test("verify: accepts published.jsonl and remote copies as signed chains, and re
   copyFileSync(copy, renamed);
   const mixed = await run(["verify", renamed], { WITNESS_HOME: client });
   assert.equal(mixed.code, 1);
-  assert.match(mixed.out, new RegExp(`signer ${keyId} at seq 0 in the copy of k_0000beef`));
+  assert.match(mixed.out, new RegExp(`signer "${keyId}" at seq 0 in the copy of k_0000beef`));
   await rm(renamed);
   // A stripped signer leaves a valid hash chain, so only requireSigner catches it.
   const records = readLines(copy).map((line) => JSON.parse(line));
@@ -568,7 +568,7 @@ test("review 3, match: a hit counts only from a file that verifies", async () =>
   const sealedUnsigned = () => { const r = sealRecord({ v: "0.2", seq: 0, ts: "2026-10-06T12:00:00.000Z", session: "published", event: "feed", origin: null, indicator: { kind: "document", sha256: target }, reason: "r" }, GENESIS); return JSON.stringify(r); };
   const cases = [
     ["a forged remote line", () => writeFileSync(path.join(paths.remote, "k_0000beef.jsonl"), body([JSON.stringify({ indicator: { kind: "document", sha256: target } })])), /k_0000beef\.jsonl does not verify/],
-    ["a remote copy under another key's name", () => writeFileSync(path.join(paths.remote, `${otherKey}.jsonl`), body(signedLines(peer, [{ key: peerKey }]))), new RegExp(`signer ${peerKey} at seq 0 in the copy of ${otherKey}`)],
+    ["a remote copy under another key's name", () => writeFileSync(path.join(paths.remote, `${otherKey}.jsonl`), body(signedLines(peer, [{ key: peerKey }]))), new RegExp(`signer "${peerKey}" at seq 0 in the copy of ${otherKey}`)],
     ["a remote copy by an untrusted key", () => writeFileSync(path.join(paths.remote, `${strangerKey}.jsonl`), body(signedLines(peer, [{ key: strangerKey }]))), /no public key/],
     ["an unsigned published.jsonl", () => writeFileSync(paths.published, body([sealedUnsigned()])), /published\.jsonl does not verify: missing signer at seq 0/],
     ["a published.jsonl signed by an untrusted key", () => writeFileSync(paths.published, body(signedLines(peer, [{ key: strangerKey }]))), /published\.jsonl does not verify: no public key/],
@@ -754,4 +754,32 @@ test("review 9, pull: one GET per run with no body or credentials, after only fo
     await feed.close();
   }
   for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+// Review round 3 (CODEX-REVIEW-5-feed). One test per finding.
+
+test("round 3 item 6: a field that cannot become text is a broken chain: match exits 2, publish 3, verify 1", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  const paths = feedPaths(home);
+  mkdirSync(paths.dir, { recursive: true });
+  // Correctly hashed, but seq is an object that a template literal cannot turn into text.
+  const record = sealRecord({ v: "0.2", seq: { toString: null, valueOf: null }, ts: "2026-10-06T12:00:00.000Z", session: "feed", event: "feed", origin: null, indicator: { kind: "document", sha256: sha256("doc a") }, reason: "r" }, GENESIS);
+  writeFileSync(paths.local, `${JSON.stringify(record)}\n`);
+  const match = await run(["feed", "match", sha256("doc a")], { WITNESS_HOME: home });
+  assert.equal(match.code, 2, match.err);
+  assert.match(match.err, /refusals\.jsonl does not verify: seq \{"toString":null,"valueOf":null\} at position 0/);
+  const publish = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(publish.code, 3, publish.err);
+  assert.match(publish.err, /refusals\.jsonl is broken: seq \{"toString":null,"valueOf":null\} at position 0/);
+  const verify = await run(["verify", paths.local], { WITNESS_HOME: home });
+  assert.equal(verify.code, 1, verify.out);
+  assert.match(verify.out, /FAIL refusals\.jsonl {2}0 records: seq \{"toString":null/);
+  // An indicator kind that cannot become text does not crash match either.
+  const odd = sealRecord({ v: "0.2", seq: 0, ts: "2026-10-06T12:00:00.000Z", session: "feed", event: "feed", origin: null, indicator: { kind: { toString: null }, sha256: sha256("doc b") }, reason: "r" }, GENESIS);
+  writeFileSync(paths.local, `${JSON.stringify(odd)}\n`);
+  const kind = await run(["feed", "match", sha256("doc b")], { WITNESS_HOME: home });
+  assert.equal(kind.code, 0, kind.err);
+  assert.match(kind.out, /refusals\.jsonl {2}\{"toString":null\}/);
+  await rm(home, { recursive: true, force: true });
 });
