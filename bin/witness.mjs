@@ -175,7 +175,7 @@ if (argv[0] === "feed") {
     const port = Number(opt("--port", String(DEFAULT_PORT)));
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(new Error("--port must be an integer from 0 to 65535"));
     try {
-      const feed = await startFeedServer({ host, port });
+      const feed = await startFeedServer({ host, port, onWarn: (message) => process.stderr.write(`[witness] ${message}\n`) });
       process.stdout.write(`${JSON.stringify({ listen: feed.url, file: feed.file })}\n`);
       process.stderr.write(`[witness] serving ${feed.file} read-only at ${feed.url}. Ctrl-C to stop.\n`);
       if (!/^(127\.|::1$)/.test(feed.host)) process.stderr.write(`[witness] ${feed.host} is not a loopback address. Every host that can reach it can read the feed.\n`);

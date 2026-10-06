@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, verify as edVerify } from "node:crypto";
-import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import http from "node:http";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { setTimeout as sleep } from "node:timers/promises";
 import { feedPaths, publishFeed, pullFeed, remoteFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
 import { keySigner } from "../lib/judge.mjs";
 import { keyIdOf, keygen, trustedKey, writeKeyPair } from "../lib/keys.mjs";
@@ -430,4 +433,117 @@ test("end to end: two homes, a real serve process, contract section 4 steps 2, 3
   }
   await rm(homeA, { recursive: true, force: true });
   await rm(homeB, { recursive: true, force: true });
+});
+
+// Review round 2 (CODEX-REVIEW-3-feed). One test per finding.
+
+const once = (emitter, event) => new Promise((resolve) => emitter.once(event, resolve));
+const body = (lines) => lines.map((line) => `${line}\n`).join("");
+// A fetch stand-in that answers every request with one fixed body and logs the URL.
+const answer = (text, asked = []) => async (url) => { asked.push(String(url)); return new Response(text, { status: 200 }); };
+
+test("review 1, serve: never reads through a link; a symlink or hard link to keys/<id>.key serves no key bytes", async () => {
+  const home = await tempHome();
+  const { keyId, keyFile } = keygen(home);
+  const keyLine = readFileSync(keyFile, "utf8").split("\n")[1];
+  const file = feedPaths(home).published;
+  mkdirSync(path.dirname(file), { recursive: true });
+  const warnings = [];
+  const feed = await startFeedServer({ home, port: 0, onWarn: (message) => warnings.push(message) });
+  try {
+    const makers = [
+      ["symlink", () => symlinkSync(path.join("..", "keys", `${keyId}.key`), file)],
+      ["hard link", () => linkSync(keyFile, file)],
+      ["directory", () => mkdirSync(file)],
+    ];
+    // A FIFO must not block the open (O_NONBLOCK). mkfifo is a test tool only.
+    if (spawnSync("mkfifo", ["--help"]).status === 0) makers.push(["fifo", () => spawnSync("mkfifo", [file])]);
+    for (const [name, make] of makers) {
+      make();
+      for (const query of ["", "?after=-1"]) {
+        const res = await fetch(`${feed.url}${query}`, { signal: AbortSignal.timeout(5000) });
+        const text = await res.text();
+        assert.equal(res.status, 500, name);
+        assert.ok(!text.includes("PRIVATE KEY") && !text.includes(keyLine), `${name}: the reply holds no key bytes`);
+      }
+      rmSync(file, { recursive: true });
+    }
+    const said = warnings.join("\n");
+    assert.match(said, /ELOOP/);
+    assert.match(said, /has 2 hard links/);
+    assert.match(said, /is not a regular file/);
+    writeLocalFeed(home, ["doc a"]);
+    publishFeed({ keyId, home });
+    const ok = await fetch(feed.url);
+    assert.equal(ok.status, 200);
+    assert.equal(await ok.text(), readFileSync(file, "utf8"), "a regular file with one link is served");
+  } finally {
+    await feed.close();
+  }
+  await rm(home, { recursive: true, force: true });
+});
+
+test("review 2, serve: streams with backpressure, caps 8 concurrent replies, destroys stalled sockets, caps a reply at maxBytes", async () => {
+  const home = await tempHome();
+  const file = feedPaths(home).published;
+  mkdirSync(path.dirname(file), { recursive: true });
+  // 24 MiB of whole lines. serve does not verify, so plain JSON lines with a seq are enough.
+  const lines = [];
+  for (let seq = 0, total = 0; total < 24 * 1024 * 1024; seq += 1) { lines.push(JSON.stringify({ seq, pad: "x".repeat(1000) })); total += lines.at(-1).length + 1; }
+  writeFileSync(file, body(lines));
+  const feed = await startFeedServer({ home, port: 0, limits: { stallMs: 800 } });
+  const responses = [];
+  feed.server.on("request", (_req, res) => responses.push(res));
+  const sockets = [];
+  try {
+    // Eight clients ask and then stop reading.
+    for (let i = 0; i < 8; i += 1) {
+      const socket = net.connect(feed.port, "127.0.0.1");
+      socket.on("error", () => {});
+      socket.pause();
+      socket.write("GET /feed HTTP/1.1\r\nHost: feed\r\n\r\n");
+      sockets.push(socket);
+    }
+    await sleep(300);
+    const stalled = responses.slice(0, 8);
+    assert.equal(stalled.length, 8);
+    const closed = stalled.map((res) => once(res, "close"));
+    for (const res of stalled) {
+      assert.equal(res.statusCode, 200);
+      // Whole-file buffering would queue about 24 MiB here. A stream with backpressure queues one chunk.
+      assert.ok(res.writableLength < 1024 * 1024, `queued ${res.writableLength} bytes`);
+    }
+    const busy = await fetch(feed.url);
+    assert.equal(busy.status, 503, "a ninth reply waits");
+    await busy.text();
+    // The stalled sockets are destroyed after stallMs with no traffic, and their slots are free again.
+    await Promise.race([Promise.all(closed), sleep(6000).then(() => assert.fail("stalled sockets were not destroyed"))]);
+    for (const res of stalled) assert.equal(res.writableFinished, false);
+    const again = await fetch(`${feed.url}?after=${lines.length - 2}`);
+    assert.equal(again.status, 200);
+    assert.equal(await again.text(), `${lines.at(-1)}\n`);
+    // A client that never finishes its headers is cut off too.
+    const slow = net.connect(feed.port, "127.0.0.1");
+    slow.on("error", () => {});
+    slow.on("data", () => {});
+    slow.write("GET /feed HTTP/1.1\r\n");
+    await Promise.race([once(slow, "close"), sleep(6000).then(() => assert.fail("a stalled request was not cut off"))]);
+  } finally {
+    for (const socket of sockets) socket.destroy();
+    await feed.close();
+  }
+  // The size cap: a reply holds whole lines only, at most maxBytes. The next pull asks for the rest.
+  const small = lines.slice(0, 10).map((_, seq) => JSON.stringify({ seq, pad: "y".repeat(280) }));
+  writeFileSync(file, body(small));
+  const capped = await startFeedServer({ home, port: 0, limits: { maxBytes: 1000 } });
+  try {
+    const first = await fetch(capped.url);
+    const text = await first.text();
+    assert.equal(text, body(small.slice(0, 3)), "three whole lines fit in 1000 bytes, four do not");
+    assert.equal(Number(first.headers.get("content-length")), Buffer.byteLength(text));
+    assert.equal(await (await fetch(`${capped.url}?after=2`)).text(), body(small.slice(3, 6)));
+  } finally {
+    await capped.close();
+  }
+  await rm(home, { recursive: true, force: true });
 });
