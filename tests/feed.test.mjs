@@ -1089,3 +1089,31 @@ test("round 4 item 1: serve refuses an empty host and every-interface hosts unle
   try { assert.equal(plain.host, "127.0.0.1"); } finally { await plain.close(); }
   await rm(home, { recursive: true, force: true });
 });
+
+test("round 4 item 3: serve ?after= stops at a blank line and sends it as is, so pull rejects it", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const good = signedLines(server, [{ key: a }, { key: a }]);
+  mkdirSync(feedPaths(server).dir, { recursive: true });
+  const feed = await startFeedServer({ home: server, port: 0 });
+  try {
+    // The client holds seq 0, bound to this URL.
+    writeFileSync(feedPaths(server).published, body([good[0]]));
+    assert.equal((await run(["feed", "pull", feed.url], { WITNESS_HOME: client })).code, 0);
+    // The review trigger: seq 0, a whitespace-only line, then a valid signed seq 1.
+    writeFileSync(feedPaths(server).published, `${good[0]}\n \t\n${good[1]}\n`);
+    assert.equal(await (await fetch(`${feed.url}?after=0`)).text(), ` \t\n${good[1]}\n`, "the blank line is in the reply");
+    const result = await run(["feed", "pull", feed.url], { WITNESS_HOME: client });
+    assert.equal(result.code, 3, result.err);
+    assert.match(result.err, /line 1 of the reply is not JSON/);
+    assert.equal(readFileSync(remoteFile(a, client), "utf8"), body([good[0]]), "nothing appended");
+    // An empty line is treated the same way.
+    writeFileSync(feedPaths(server).published, `${good[0]}\n\n${good[1]}\n`);
+    assert.equal(await (await fetch(`${feed.url}?after=0`)).text(), `\n${good[1]}\n`);
+  } finally {
+    await feed.close();
+  }
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});

@@ -199,6 +199,7 @@ witness feed serve [--host 127.0.0.1] [--port 7480] [--any-interface]
     A host that resolves to every interface (0.0.0.0, ::, [::], "0"): exit 1, unless --any-interface is given too.
     GET /feed            published.jsonl as application/x-ndjson, bytes as stored.
     GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send the bytes after them.
+                         A blank or unparseable line stops the skip and is sent as is, so pull rejects it.
     A reply holds whole lines only, at most 32 MiB. A last line with no newline is held back. Pull again for the rest.
     published.jsonl is opened with O_NOFOLLOW and O_NONBLOCK. It must be a regular file with one hard link.
     O_NOFOLLOW checks only the last path component: a link at feed/ or above is followed.
