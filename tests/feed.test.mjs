@@ -783,3 +783,48 @@ test("round 3 item 6: a field that cannot become text is a broken chain: match e
   assert.match(kind.out, /refusals\.jsonl {2}\{"toString":null\}/);
   await rm(home, { recursive: true, force: true });
 });
+
+test("round 3 item 1: a remote *.jsonl name must be exactly <key_id>.jsonl; any other name makes match exit 2 and verify fail", async () => {
+  const home = await tempHome();
+  const peer = await tempHome();
+  const a = keygen(peer).keyId;
+  const b = keygen(peer).keyId;
+  trust(peer, home, a);
+  trust(peer, home, b);
+  const paths = feedPaths(home);
+  // The review trigger: a correctly chained file signed by A at seq 0 and by B at seq 1, named ".jsonl".
+  const mixed = body(signedLines(peer, [{ key: a }, { key: b }]));
+  const target = sha256("doc 1");
+  const cases = [
+    [".jsonl", mixed],
+    ["x.jsonl", mixed],
+    [`${a.toUpperCase()}.jsonl`, body(signedLines(peer, [{ key: a }]))],
+    [`${a}x.jsonl`, body(signedLines(peer, [{ key: a }]))],
+    ["junk.jsonl", ""],
+  ];
+  for (const [name, content] of cases) {
+    rmSync(paths.dir, { recursive: true, force: true });
+    mkdirSync(paths.remote, { recursive: true });
+    writeFileSync(path.join(paths.remote, name), content);
+    const match = await run(["feed", "match", target], { WITNESS_HOME: home });
+    assert.equal(match.code, 2, `${name}: ${match.out}${match.err}`);
+    assert.match(match.err, /is not <key_id>\.jsonl/, name);
+    const verify = await run(["verify", paths.remote], { WITNESS_HOME: home });
+    assert.equal(verify.code, 1, `${name}: ${verify.out}`);
+    assert.match(verify.out, /FAIL .*is not <key_id>\.jsonl/, name);
+  }
+  // A good name with a record by another key fails on that record. There is no shortcut for any key_id.
+  rmSync(paths.dir, { recursive: true, force: true });
+  mkdirSync(paths.remote, { recursive: true });
+  writeFileSync(path.join(paths.remote, `${a}.jsonl`), mixed);
+  const other = await run(["feed", "match", target], { WITNESS_HOME: home });
+  assert.equal(other.code, 2);
+  assert.match(other.err, new RegExp(`signer "${b}" at seq 1 in the copy of ${a}`));
+  // Names that are not *.jsonl (peers.json, a pull lock, a temp file) are not feed files.
+  writeFileSync(path.join(paths.remote, `${a}.jsonl`), body(signedLines(peer, [{ key: a }, { key: a }])));
+  writeFileSync(paths.peers, "{}\n");
+  mkdirSync(path.join(paths.remote, `${a}.jsonl.lock`));
+  const good = await run(["feed", "match", target], { WITNESS_HOME: home });
+  assert.equal(good.code, 0, good.err);
+  for (const h of [home, peer]) await rm(h, { recursive: true, force: true });
+});
