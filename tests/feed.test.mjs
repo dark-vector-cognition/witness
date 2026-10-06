@@ -1117,3 +1117,65 @@ test("round 4 item 3: serve ?after= stops at a blank line and sends it as is, so
   }
   for (const h of [server, client]) await rm(h, { recursive: true, force: true });
 });
+
+// Replace the UTF-8 bytes of the first U+FFFD in buf with the single invalid byte FF.
+function withFF(buf) {
+  const at = buf.indexOf(Buffer.from("�"));
+  assert.ok(at >= 0, "the line holds U+FFFD");
+  return Buffer.concat([buf.subarray(0, at), Buffer.from([0xff]), buf.subarray(at + 3)]);
+}
+
+test("round 4 item 4: invalid UTF-8 fails the file: match 2, publish 3, verify 1, pull 3", async () => {
+  const home = await tempHome();
+  const peer = await tempHome();
+  const { keyId } = keygen(home);
+  const a = keygen(peer).keyId;
+  trust(peer, home, a);
+  const paths = feedPaths(home);
+  const target = sha256("doc ff");
+  // Signed and unsigned records whose reason is U+FFFD. Decoding FF with replacement would give the same text back.
+  const signedFFFD = (signerHome, key) => {
+    const sealed = sealRecord({ v: "0.2", seq: 0, ts: "2026-10-06T12:00:00.000Z", session: "published", event: "feed", origin: null, indicator: { kind: "document", sha256: target }, reason: "�" }, GENESIS);
+    return JSON.stringify({ ...sealed, signer: keySigner(key, signerHome)(sealed.hash) });
+  };
+  const localFFFD = JSON.stringify(sealRecord({ v: "0.2", seq: 0, ts: "2026-10-06T12:00:00.000Z", session: "feed", event: "feed", origin: null, indicator: { kind: "document", sha256: target }, reason: "�" }, GENESIS));
+  const match = () => run(["feed", "match", target], { WITNESS_HOME: home });
+  const files = [
+    ["published.jsonl", paths.published, `${signedFFFD(home, keyId)}\n`],
+    ["refusals.jsonl", paths.local, `${localFFFD}\n`],
+  ];
+  for (const [name, file, text] of files) {
+    rmSync(paths.dir, { recursive: true, force: true });
+    mkdirSync(paths.dir, { recursive: true });
+    writeFileSync(file, text);
+    assert.equal((await match()).code, 0, `${name}: valid U+FFFD is fine`);
+    writeFileSync(file, withFF(Buffer.from(text)));
+    const found = await match();
+    assert.equal(found.code, 2, `${name}: ${found.out}`);
+    assert.match(found.err, new RegExp(`${name.replace(".", "\\.")} is not valid UTF-8`));
+    const published = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+    assert.equal(published.code, 3, `${name}: ${published.err}`);
+    assert.match(published.err, /is not valid UTF-8/);
+    const verify = await run(["verify", file], { WITNESS_HOME: home });
+    assert.equal(verify.code, 1, `${name}: ${verify.out}`);
+    assert.match(verify.out, new RegExp(`FAIL ${name.replace(".", "\\.")} .*is not valid UTF-8`));
+  }
+  // pull: the local copy holds FF.
+  rmSync(paths.dir, { recursive: true, force: true });
+  const line = signedFFFD(peer, a);
+  const url = "http://peer.test/feed";
+  assert.equal((await pullFeed({ url, home, fetchImpl: answer(`${line}\n`) })).appended, 1);
+  const copy = remoteFile(a, home);
+  writeFileSync(copy, withFF(readFileSync(copy)));
+  const broken = readFileSync(copy);
+  await assert.rejects(pullFeed({ url, home, fetchImpl: answer("") }), (error) => error.exitCode === 3 && /is not valid UTF-8/.test(error.message));
+  assert.deepEqual(readFileSync(copy), broken, "nothing appended");
+  assert.equal((await match()).code, 2);
+  assert.equal((await run(["verify", copy], { WITNESS_HOME: home })).code, 1);
+  // pull: a reply line holds FF. The prefix stays, exit 3.
+  const fresh = await tempHome();
+  trust(peer, fresh, a);
+  const second = signedLines(peer, [{ key: a }]);
+  await assert.rejects(pullFeed({ url, home: fresh, fetchImpl: answer(Buffer.concat([Buffer.from(`${second[0]}\n`), withFF(Buffer.from(`${line}\n`))])) }), (error) => error.exitCode === 3 && /line 2 of the reply is not valid UTF-8/.test(error.message) && error.appended === 1);
+  for (const h of [home, peer, fresh]) await rm(h, { recursive: true, force: true });
+});
