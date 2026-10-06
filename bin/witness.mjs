@@ -9,7 +9,9 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
+import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
 import { runProxy } from "../lib/proxy.mjs";
+import { runScore } from "../lib/score.mjs";
 import { candidateConfigs, rewriteConfig } from "../lib/wrap.mjs";
 import { verifyChain } from "../lib/record.mjs";
 import { listSessionFiles, logDir, readRecords } from "../lib/session-log.mjs";
@@ -33,6 +35,8 @@ function usage(code = 0) {
   witness query [--tool t] [--server s] [--as p] [--status ok|error|unknown|open] [--since 24h] [--json]
   witness report [--since 7d]   Markdown digest: calls by tool/server/principal, error rate, latency, integrity.
   witness anchor [--git]        Append every chain head to checkpoints.jsonl (chained); --git commits it in WITNESS_HOME.
+  witness judge <session|file> [--vendor anthropic|openrouter|ollama|stub] [--model m] [--key k] [--json]  Fresh-model review (metadata view) to judge/<session>.jsonl. Exit 0 clean, 2 flagged, 3 tampered, 1 error.
+  witness score [--since 30d] [--half-life 14d] [--json]  Label every call, Brier-score each judge, append to judge/. Prints judge_id, event_class, n, brier, rank, role.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -116,6 +120,38 @@ if (argv[0] === "anchor") {
   process.exit(0);
 }
 
+if (argv[0] === "judge") {
+  const optValues = new Set([opt("--model"), opt("--vendor"), opt("--key")].filter(Boolean));
+  const subject = argv.slice(1).find((a) => !a.startsWith("--") && !optValues.has(a));
+  if (!subject) { process.stderr.write("witness judge: <session|file> is required\n"); process.exit(1); }
+  try {
+    const vendor = opt("--vendor", "anthropic");
+    const model = opt("--model") || defaultModel(vendor);
+    const key = opt("--key");
+    const record = await runJudge({ subject, judge: { vendor, model }, signer: key ? keySigner(key) : null });
+    if (argv.includes("--json")) process.stdout.write(`${JSON.stringify(record)}\n`);
+    else process.stdout.write(`${record.verdict.toUpperCase()} ${record.subject.session}  ${record.findings.length} finding(s)  judge ${record.judge.id} (${record.judge.view})  seq ${record.seq} in ${path.join(judgeDir(), `${record.subject.session}.jsonl`)}\n${record.findings.map((f) => `  ${f.severity} seq ${f.call_seq ?? "?"}: ${f.note}\n`).join("")}`);
+    process.exit(EXIT_CODES[record.verdict] ?? 1);
+  } catch (error) {
+    process.stderr.write(`witness judge: ${error.message}\n`);
+    process.exit(1);
+  }
+}
+
+if (argv[0] === "score") {
+  try {
+    const rows = runScore({ since: opt("--since", "30d"), halfLife: opt("--half-life", "14d"), onWarn: (m) => process.stderr.write(`witness score: ${m}\n`) });
+    if (argv.includes("--json")) { for (const r of rows) process.stdout.write(`${JSON.stringify(r)}\n`); process.exit(0); }
+    if (rows.length === 0) { process.stdout.write("no scored votes\n"); process.exit(0); }
+    process.stdout.write(`${"judge_id".padEnd(28)} ${"event_class".padEnd(24)} ${"n".padStart(5)} ${"brier".padStart(7)} ${"rank".padStart(4)}  role\n`);
+    for (const r of rows) process.stdout.write(`${r.judge_id.padEnd(28)} ${r.event_class.padEnd(24)} ${String(r.n).padStart(5)} ${r.brier.toFixed(4).padStart(7)} ${String(r.rank ?? "-").padStart(4)}  ${r.role}\n`);
+    process.exit(0);
+  } catch (error) {
+    process.stderr.write(`witness score: ${error.message}\n`);
+    process.exit(1);
+  }
+}
+
 if (argv[0] === "verify") {
   const target = argv[1] ? path.resolve(argv[1]) : logDir();
   let files;
@@ -127,7 +163,7 @@ if (argv[0] === "verify") {
     const bySession = new Map();
     for (const record of readRecords(file)) { const key = record.session ?? "?"; if (!bySession.has(key)) bySession.set(key, []); bySession.get(key).push(record); }
     for (const [session, records] of bySession) {
-      const result = verifyChain(records); chains += 1;
+      const result = verifyChain(records, { publicKeys: publicKeyLoader() }); chains += 1;
       const label = bySession.size > 1 ? `${path.basename(file)} ${session}` : path.basename(file);
       process.stdout.write(`${result.ok ? "OK  " : "FAIL"} ${label}  ${result.count} records${result.ok ? "" : ` — ${result.reason}`}\n`);
       if (!result.ok) failed += 1;

@@ -1,6 +1,6 @@
 # Witness record format v0.2: readers of the stream
 
-Status: **draft, Oct 6 2026**. Extends [SPEC.md](SPEC.md) (format v0.1). Every v0.1 rule still holds: one append-only JSONL chain per file, `canonical()` and `hash` as defined there, arguments and results digested and never stored. Records that use anything on this page carry `"v": "0.2"`. A v0.1 verifier rejects nothing here; it only sees unknown event types.
+Status: **draft, Oct 6 2026**. Extends [SPEC.md](SPEC.md) (format v0.1). Every v0.1 rule still holds: one append-only JSONL chain per file, `canonical()` and `hash` as defined there, arguments and results digested and never stored. Records that use anything on this page carry `"v": "0.2"`. A v0.1 verifier accepts every unsigned record here and only sees unknown event types. A v0.1 verifier reports a hash mismatch on a signed record, because `signer` is attached after the hash; a v0.2 verifier removes `signer` before the check and, when a key for `key_id` is present under `keys/`, checks the signature and reports a bad one.
 
 Thesis: one stream, many readers. Every reader writes its findings as new records. No reader edits a record. Ticket: LOCAL-543.
 
@@ -10,6 +10,7 @@ Thesis: one stream, many readers. Every reader writes its findings as new record
 |---|---|---|---|
 | session | `log/<session>.jsonl` | the recorder (proxy or the witness-recorder mod) | v0.1 events plus `vote`, `grant`, `override`, `refusal` |
 | judgment | `judge/<session>.jsonl` | `witness judge` and `witness score` | `judge`, `outcome_label`, `score`, `rotation` |
+| scoreboard | `judge/j_scoreboard.jsonl` | `witness score` | `score`, `rotation`; records carry `session` `j_scoreboard` |
 | feed | `feed/refusals.jsonl` | the council mod, through `witness feed` | `feed` |
 
 Each chain is independent: `seq` starts at 0, `prev` starts at `GENESIS`. A judgment chain names the session chain it reads through `subject`. A reader never opens a session file for writing.
@@ -22,7 +23,7 @@ Any record may carry `signer`:
 "signer": { "key_id": "k_3f2a9c1e", "alg": "ed25519", "sig": "<base64 of ed25519(hash)>" }
 ```
 
-`sig` signs the record's `hash`, so the hash is computed first, with `signer` absent, then `signer` is attached. Verification: recompute `hash` on the record without `signer`, then check `sig` against the public key for `key_id`. Keys live in `$WITNESS_HOME/keys/<key_id>.pub`. A record without `signer` is unsigned, not invalid. `principal.verified` stays `false` unless a signature covers the record.
+`sig` signs the raw 32 bytes of the record's `hash` (the hex string decoded), so the hash is computed first, with `signer` absent, then `signer` is attached. Verification: recompute `hash` on the record without `signer`, then check `sig` against the public key for `key_id`. Public keys live in `$WITNESS_HOME/keys/<key_id>.pub`. The private key lives in `$WITNESS_HOME/keys/<key_id>.key` (PKCS8 PEM) and never enters a record. An older v0.1 verifier hashes `signer` with the rest of the record, so it reports a hash mismatch on a signed record. A record without `signer` is unsigned, not invalid. `principal.verified` stays `false` unless a signature covers the record.
 
 ## 3. Session chain additions
 
@@ -87,11 +88,11 @@ Written by `witness judge`. A fresh model instance with no session context reads
 | `subject` | object | `{ session, range: [first_seq, last_seq], head }`. `head` is the `hash` of the last record judged |
 | `judge` | object | `{ id, model, vendor, view }` as in `vote` |
 | `verdict` | string | `clean`, `flagged` or `tampered` |
-| `findings` | array | each `{ call_seq, severity, note }`. `severity` is `info`, `warn` or `block`. `note` up to 240 characters, no raw arguments |
+| `findings` | array | each `{ call_seq, severity, note }`. `call_seq` is an integer; when the model names no call, it is the `seq` of the first `tool_call` in range and `severity` is `info`. `severity` is `info`, `warn` or `block`. `note` up to 240 characters, no raw arguments; any `args_summary` value in a note is replaced with `[redacted]` |
 | `chain_ok` | boolean | result of `verifyChain` on the subject before the model saw anything |
 | `ms` | integer | model latency |
 
-Rules: the judge receives the session records as data, with every `args_summary` removed, and the instruction that nothing in the records is an instruction to it. If `chain_ok` is false the verdict is `tampered` and the model is not called.
+Rules: the judge receives the session records as data, with every `args_summary` removed, and the instruction that nothing in the records is an instruction to it. `judge.view` is therefore always `metadata`. The fixed instruction goes in the system prompt and the records go in the user turn as one JSON data block. A reply that does not parse gives verdict `flagged` with one `warn` finding, note `judge reply unparseable`. If `chain_ok` is false the verdict is `tampered` and the model is not called.
 
 ### `outcome_label`
 
@@ -102,9 +103,9 @@ Written by `witness score`, one per `tool_call` in the subject session, computed
 | `subject` | object | `{ session, call_seq }` |
 | `label` | string | `clean`, `flagged`, `overridden` or `refused` |
 | `y` | integer | 1 when the call should have been held: label is `flagged`, `refused`, or `overridden` with answer `cancel`. 0 otherwise |
-| `evidence` | array of integer | `seq` values of the records that decided the label: the `tool_result`, any `judge` finding with severity `warn` or `block` on this call, any `override`, any `refusal` |
+| `evidence` | object | `{ session, judgment }`, each an array of integer `seq`. `session`: the `tool_result`, any `override`, any `refusal` on this call. `judgment`: any `judge` record with a `warn` or `block` finding on this call, or with verdict `tampered` |
 
-Precedence: `refused` > `overridden` > `flagged` > `clean`. A `judge` record with verdict `tampered` labels every call in its range `flagged`.
+Precedence: `refused` > `overridden` > `flagged` > `clean`. A `judge` record with verdict `tampered` labels every call in the session `flagged`, whatever its `range`.
 
 ### `score`
 
@@ -117,6 +118,7 @@ Written by `witness score`, one per judge per event class per run.
 | `n` | integer | votes scored |
 | `brier` | number | mean over scored votes of `(p_unsafe - y)^2`, with exponential decay weight `0.5^(age_days / half_life_days)`; `half_life_days` default 14 |
 | `abstentions` | integer | assigned calls with no vote from this judge; each counts as `p_unsafe = 0.5` |
+| `malformed` | integer | assigned votes whose `p_unsafe` is neither `null` (an abstention) nor a number in [0, 1]; not scored and not in `n` |
 | `window` | object | `{ since, until }` ISO-8601 |
 
 Only assigned calls are scored: a vote on a call the judge was not assigned to is ignored. Assignment is the set of `grant.votes` that name the judge.
@@ -133,7 +135,7 @@ Written by `witness score` when a judge reaches its term.
 | `term` | object | `{ events, days }` the limit that was reached |
 | `successor` | string or null | new `judge.id`, which must differ in `id`; `model` may repeat |
 
-Rank per event class is the ascending order of `brier` among judges with `n >= 20`. The lowest `brier` holds `director` for that class. No `judge.id` may hold `director` in more than 3 classes at once.
+Rank per event class is the ascending order of `brier` among judges with `n >= 20`. The lowest `brier` holds `director` for that class. No `judge.id` may hold `director` in more than 3 classes at once; the `*` class does not count.
 
 ## 5. Feed chain
 
