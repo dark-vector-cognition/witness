@@ -10,6 +10,7 @@ import { spawnSync } from "node:child_process";
 import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
+import { DEFAULT_HOST, DEFAULT_PORT, feedChainRule, matchFeed, publishFeed, pullFeed, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
 import { keygen } from "../lib/keys.mjs";
 import { runProxy } from "../lib/proxy.mjs";
 import { runScore } from "../lib/score.mjs";
@@ -39,6 +40,10 @@ function usage(code = 0) {
   witness judge <session|file> [--vendor anthropic|openrouter|ollama|stub] [--model m] [--key k] [--json]  Fresh-model review (metadata view) to judge/<session>.jsonl. Exit 0 clean, 2 flagged, 3 tampered, 1 error.
   witness score [--since 30d] [--half-life 14d] [--json]  Label every call, Brier-score each judge, append to judge/. Prints judge_id, event_class, n, brier, rank, role.
   witness keygen                Make an ed25519 key pair in keys/. Prints the key_id. Never overwrites a key.
+  witness feed publish --key <key_id>   Sign every new local refusal indicator into feed/published.jsonl. Exit 0 ok, 1 error, 3 broken chain.
+  witness feed serve [--host 127.0.0.1] [--port 7480]   Read-only HTTP: GET /feed and GET /feed?after=<seq>. Nothing else.
+  witness feed pull <url>       Verify a peer's /feed and append it to feed/remote/<key_id>.jsonl. Exit 0 ok, 1 error, 3 bad line.
+  witness feed match <sha256>   Exit 0 when an indicator digest is in any feed file, 1 when not, 2 on an error.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -152,6 +157,52 @@ if (argv[0] === "keygen") {
   }
 }
 
+if (argv[0] === "feed") {
+  const sub = argv[1];
+  const fail = (error) => {
+    process.stderr.write(`witness feed ${sub}: ${error.message}\n`);
+    process.exit(error.exitCode ?? 1);
+  };
+  if (sub === "publish") {
+    try {
+      const result = publishFeed({ keyId: opt("--key") });
+      process.stdout.write(`${result.appended} record(s) appended to ${result.file}\n`);
+      if (result.skipped) process.stderr.write(`witness feed publish: skipped ${result.skipped} local record(s) that are not feed records with an indicator\n`);
+      process.exit(0);
+    } catch (error) { fail(error); }
+  } else if (sub === "serve") {
+    const host = opt("--host", DEFAULT_HOST);
+    const port = Number(opt("--port", String(DEFAULT_PORT)));
+    if (!Number.isInteger(port) || port < 0 || port > 65535) fail(new Error("--port must be an integer from 0 to 65535"));
+    try {
+      const feed = await startFeedServer({ host, port });
+      process.stdout.write(`${JSON.stringify({ listen: feed.url, file: feed.file })}\n`);
+      process.stderr.write(`[witness] serving ${feed.file} read-only at ${feed.url}. Ctrl-C to stop.\n`);
+      if (!/^(127\.|::1$)/.test(feed.host)) process.stderr.write(`[witness] ${feed.host} is not a loopback address. Every host that can reach it can read the feed.\n`);
+      const stop = async () => { await feed.close(); process.exit(0); };
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
+    } catch (error) { fail(error); }
+  } else if (sub === "pull") {
+    try {
+      const result = await pullFeed({ url: argv.slice(2).find((a) => !a.startsWith("--")) });
+      process.stdout.write(`${result.appended} record(s) appended${result.file ? ` to ${result.file}` : ""}\n`);
+      process.exit(0);
+    } catch (error) {
+      if (error.appended !== undefined) process.stdout.write(`${error.appended} record(s) appended${error.file ? ` to ${error.file}` : ""}\n`);
+      fail(error);
+    }
+  } else if (sub === "match") {
+    const result = matchFeed(argv[2]);
+    for (const hit of result.hits) process.stdout.write(`${hit.file}  ${hit.kind}\n`);
+    for (const message of result.errors) process.stderr.write(`witness feed match: ${message}\n`);
+    if (result.code === 1) process.stderr.write("witness feed match: not found\n");
+    process.exit(result.code);
+  } else {
+    process.stderr.write("witness feed: publish, serve, pull or match. See witness --help.\n");
+    process.exit(1);
+  }
+}
+
 if (argv[0] === "score") {
   try {
     const rows = runScore({ since: opt("--since", "30d"), halfLife: opt("--half-life", "14d"), onWarn: (m) => process.stderr.write(`witness score: ${m}\n`) });
@@ -217,8 +268,8 @@ if (argv[0] === "tail") {
   };
   drain();
   setInterval(drain, 500);
-} else if (argv[0] !== "http") {
-  // proxy mode (http mode is long-running and dispatched above)
+} else if (argv[0] !== "http" && argv[0] !== "feed") {
+  // proxy mode (http mode and feed serve are long-running and dispatched above)
   let principal = process.env.WITNESS_AS || null;
   let serverName = null;
   let allowKeys = [];

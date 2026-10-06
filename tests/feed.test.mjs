@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash, createPublicKey, generateKeyPairSync } from "node:crypto";
+import { createHash, createPublicKey, generateKeyPairSync, verify as edVerify } from "node:crypto";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { feedPaths, publishFeed, pullFeed, remoteFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
+import { keySigner } from "../lib/judge.mjs";
 import { keyIdOf, keygen, trustedKey, writeKeyPair } from "../lib/keys.mjs";
+import { GENESIS, sealRecord, sha256 } from "../lib/record.mjs";
 
 const bin = new URL("../bin/witness.mjs", import.meta.url).pathname;
 const tempHome = () => mkdtemp(path.join(os.tmpdir(), "witness-feed-"));
@@ -64,5 +68,256 @@ test("keys: a .pub whose content hashes to a different key_id is not trusted", a
   assert.match(trustedKey(a.keyId, home).problem, new RegExp(`holds key ${b.keyId}, not ${a.keyId}`));
   assert.match(trustedKey("k_00000000", home).problem, /no public key/);
   assert.match(trustedKey("../keys/x", home).problem, /invalid key_id/);
+  await rm(home, { recursive: true, force: true });
+});
+
+// The council's local feed chain: envelope session "feed", unsigned, sealed with sealRecord, as mods/council/hooks/feed.ts writes it.
+// Appends one record per document text. Returns the indicator digests.
+function writeLocalFeed(home, docs) {
+  const file = feedPaths(home).local;
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  const lines = existsSync(file) ? readFileSync(file, "utf8").split("\n").filter(Boolean) : [];
+  const last = lines.length ? JSON.parse(lines.at(-1)) : null;
+  let prev = last?.hash ?? GENESIS;
+  let seq = last ? last.seq + 1 : 0;
+  return docs.map((doc) => {
+    const record = sealRecord({ v: "0.2", seq, ts: "2026-10-06T12:00:00.000Z", session: "feed", event: "feed", origin: { host_sha256: sha256("host-a"), session: "s_a0000001" }, indicator: { kind: "document", sha256: sha256(doc) }, reason: "Prompt-injection phrase in write content. Call refused by council." }, prev);
+    appendFileSync(file, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+    prev = record.hash;
+    seq += 1;
+    return sha256(doc);
+  });
+}
+
+// Signed published lines built by hand, so a test can serve a feed that lies. specs: [{ key, seq }], chained in order.
+function signedLines(home, specs) {
+  let prev = GENESIS;
+  return specs.map((spec, i) => {
+    const sealed = sealRecord({ v: "0.2", seq: spec.seq ?? i, ts: "2026-10-06T12:00:00.000Z", session: "published", event: "feed", origin: { host_sha256: "0".repeat(64), session: "s_x" }, indicator: { kind: "document", sha256: sha256(`doc ${i}`) }, reason: "r" }, prev);
+    prev = sealed.hash;
+    return JSON.stringify({ ...sealed, signer: keySigner(spec.key, home)(sealed.hash) });
+  });
+}
+
+function trust(fromHome, toHome, keyId) {
+  mkdirSync(path.join(toHome, "keys"), { recursive: true, mode: 0o700 });
+  copyFileSync(path.join(fromHome, "keys", `${keyId}.pub`), path.join(toHome, "keys", `${keyId}.pub`));
+}
+
+const readLines = (file) => readFileSync(file, "utf8").split("\n").filter(Boolean);
+
+test("publish: signs one record per new indicator, copies origin, indicator and reason, and is idempotent", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  const digests = writeLocalFeed(home, ["doc a", "doc b", "doc a"]);
+  const first = publishFeed({ keyId, home });
+  assert.equal(first.appended, 2, "the repeated indicator is published once");
+  const records = readLines(first.file).map((line) => JSON.parse(line));
+  const local = readLines(feedPaths(home).local).map((line) => JSON.parse(line));
+  assert.deepEqual(Object.keys(records[0]), ["v", "seq", "ts", "session", "event", "origin", "indicator", "reason", "prev", "hash", "signer"]);
+  assert.deepEqual(records.map((r) => [r.v, r.seq, r.session, r.event, r.indicator.sha256]), [["0.2", 0, "published", "feed", digests[0]], ["0.2", 1, "published", "feed", digests[1]]]);
+  assert.equal(records[0].prev, GENESIS);
+  assert.deepEqual(records[0].origin, local[0].origin);
+  assert.deepEqual(records[0].indicator, local[0].indicator);
+  assert.equal(records[0].reason, local[0].reason);
+  const pub = createPublicKey(readFileSync(path.join(home, "keys", `${keyId}.pub`), "utf8"));
+  for (const r of records) {
+    assert.deepEqual([r.signer.key_id, r.signer.alg], [keyId, "ed25519"]);
+    assert.ok(edVerify(null, Buffer.from(r.hash, "hex"), pub, Buffer.from(r.signer.sig, "base64")));
+  }
+  assert.equal(verifyFeedChain(records, { signed: true, home }).ok, true);
+  const bytes = readFileSync(first.file);
+  assert.equal(publishFeed({ keyId, home }).appended, 0);
+  assert.deepEqual(readFileSync(first.file), bytes, "a second run appends nothing");
+  const cli = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(cli.code, 0, cli.err);
+  assert.match(cli.out, /^0 record\(s\) appended/);
+  writeLocalFeed(home, ["doc c"]);
+  assert.equal(publishFeed({ keyId, home }).appended, 1);
+  assert.deepEqual(readLines(first.file).map((line) => JSON.parse(line).seq), [0, 1, 2]);
+  assert.equal((await stat(first.file)).mode & 0o777, 0o600);
+  await rm(home, { recursive: true, force: true });
+});
+
+test("publish: a broken local chain or published chain exits 3 and publishes nothing; a missing key exits 1", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  writeLocalFeed(home, ["doc a", "doc b"]);
+  const paths = feedPaths(home);
+  const original = readFileSync(paths.local, "utf8");
+  writeFileSync(paths.local, original.replace("Call refused", "Call refuseD"));
+  const broken = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(broken.code, 3, broken.err);
+  assert.match(broken.err, /refusals\.jsonl is broken: hash mismatch at seq 0/);
+  assert.equal(existsSync(paths.published), false);
+  writeFileSync(paths.local, original);
+  assert.equal(publishFeed({ keyId, home }).appended, 2);
+  // A signer stripped from a published record leaves a valid unsigned hash chain. publish must still refuse it.
+  const lines = readLines(paths.published).map((line) => JSON.parse(line));
+  delete lines[1].signer;
+  writeFileSync(paths.published, lines.map((r) => `${JSON.stringify(r)}\n`).join(""));
+  writeLocalFeed(home, ["doc c"]);
+  const stripped = await run(["feed", "publish", "--key", keyId], { WITNESS_HOME: home });
+  assert.equal(stripped.code, 3);
+  assert.match(stripped.err, /published\.jsonl is broken: missing signer at seq 1/);
+  assert.equal(readLines(paths.published).length, 2);
+  assert.equal((await run(["feed", "publish"], { WITNESS_HOME: home })).code, 1);
+  const unknown = await run(["feed", "publish", "--key", "k_00000000"], { WITNESS_HOME: home });
+  assert.equal(unknown.code, 1);
+  assert.match(unknown.err, /no private key/);
+  await rm(home, { recursive: true, force: true });
+});
+
+test("serve: GET /feed is ndjson, ?after= returns only later records, every other path or method is 404 or 405", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  const feed = await startFeedServer({ home, host: "127.0.0.1", port: 0 });
+  try {
+    assert.equal(feed.host, "127.0.0.1");
+    const empty = await fetch(feed.url);
+    assert.equal(empty.status, 200);
+    assert.equal(empty.headers.get("content-type"), "application/x-ndjson");
+    assert.equal(await empty.text(), "", "a missing published.jsonl is an empty feed");
+    writeLocalFeed(home, ["doc a", "doc b", "doc c"]);
+    publishFeed({ keyId, home });
+    const file = feedPaths(home).published;
+    const lines = readLines(file);
+    assert.equal(await (await fetch(feed.url)).text(), readFileSync(file, "utf8"));
+    assert.equal(await (await fetch(`${feed.url}?after=0`)).text(), `${lines[1]}\n${lines[2]}\n`);
+    assert.equal(await (await fetch(`${feed.url}?after=2`)).text(), "");
+    assert.equal(await (await fetch(`${feed.url}?after=-1`)).text(), readFileSync(file, "utf8"));
+    assert.equal((await fetch(`${feed.url}?after=x`)).status, 400);
+    const base = feed.url.slice(0, -"/feed".length);
+    for (const p of ["/", "/feed/", "/feed.jsonl", `/keys/${keyId}.key`, "/published.jsonl", "/feed/../keys"]) assert.equal((await fetch(`${base}${p}`)).status, 404, p);
+    const before = readFileSync(file);
+    for (const method of ["POST", "PUT", "PATCH", "DELETE", "HEAD"]) {
+      const res = await fetch(feed.url, { method, ...(method === "HEAD" ? {} : { body: "{}" }) });
+      assert.equal(res.status, 405, method);
+      assert.equal(res.headers.get("allow"), "GET");
+    }
+    assert.deepEqual(readFileSync(file), before, "no request writes to the feed");
+    // A last line with no newline is still being written, so it is held back.
+    appendFileSync(file, '{"v":"0.2","seq":3');
+    assert.equal(await (await fetch(`${feed.url}?after=2`)).text(), "");
+  } finally {
+    await feed.close();
+  }
+  await rm(home, { recursive: true, force: true });
+});
+
+test("pull: verifies and appends byte-exact copies, then asks only for ?after=<last seq>", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const { keyId } = keygen(server);
+  trust(server, client, keyId);
+  writeLocalFeed(server, ["doc a", "doc b"]);
+  publishFeed({ keyId, home: server });
+  const feed = await startFeedServer({ home: server, port: 0 });
+  const asked = [];
+  const spy = (url, init) => { asked.push(String(url)); return fetch(url, init); };
+  try {
+    const first = await pullFeed({ url: feed.url, home: client, fetchImpl: spy });
+    assert.deepEqual([first.appended, first.keyId], [2, keyId]);
+    assert.equal(first.file, remoteFile(keyId, client));
+    assert.deepEqual(readFileSync(first.file), readFileSync(feedPaths(server).published), "byte-exact copy");
+    writeLocalFeed(server, ["doc c"]);
+    publishFeed({ keyId, home: server });
+    assert.equal((await pullFeed({ url: feed.url, home: client, fetchImpl: spy })).appended, 1);
+    assert.equal((await pullFeed({ url: feed.url, home: client, fetchImpl: spy })).appended, 0);
+    assert.deepEqual(asked, [feed.url, `${feed.url}?after=1`, `${feed.url}?after=2`]);
+    assert.deepEqual(readFileSync(first.file), readFileSync(feedPaths(server).published));
+    assert.deepEqual(JSON.parse(readFileSync(feedPaths(client).peers, "utf8")), { [feed.url]: keyId });
+    assert.equal((await stat(feedPaths(client).remote)).mode & 0o777, 0o700);
+    assert.equal((await stat(first.file)).mode & 0o777, 0o600);
+    // The same peer by a new URL: pull finds the copy from the first line and asks again with ?after=.
+    asked.length = 0;
+    const alias = `${feed.url}?mirror=1`;
+    assert.equal((await pullFeed({ url: alias, home: client, fetchImpl: spy })).appended, 0);
+    assert.deepEqual(asked, [alias, `${alias}&after=2`]);
+  } finally {
+    await feed.close();
+  }
+  await rm(server, { recursive: true, force: true });
+  await rm(client, { recursive: true, force: true });
+});
+
+test("pull: unknown key, bad signature, edited byte, seq gap, mixed key_id and more each exit 3 and keep only the lines before", async () => {
+  const server = await tempHome();
+  const a = keygen(server).keyId;
+  const b = keygen(server).keyId;
+  const good = signedLines(server, [{ key: a }, { key: a }, { key: a }]);
+  const badSig = (() => { const r = JSON.parse(good[1]); r.signer.sig = keySigner(a, server)(sha256("other")).sig; return JSON.stringify(r); })();
+  const noSigner = (() => { const r = JSON.parse(good[1]); delete r.signer; return JSON.stringify(r); })();
+  const cases = [
+    { name: "unknown key", lines: good, trusted: [], kept: 0, reason: /line 1 of the reply cannot be trusted: no public key for k_/ },
+    { name: "bad signature", lines: [good[0], badSig, good[2]], trusted: [a], kept: 1, reason: /line 2 of the reply has a bad signature/ },
+    { name: "edited byte", lines: [good[0], good[1].replace('"reason":"r"', '"reason":"s"'), good[2]], trusted: [a], kept: 1, reason: /line 2 of the reply has a hash that does not match/ },
+    { name: "seq gap", lines: signedLines(server, [{ key: a }, { key: a, seq: 2 }]), trusted: [a], kept: 1, reason: /line 2 of the reply has seq 2, but the local copy needs seq 1/ },
+    { name: "mixed key_id", lines: signedLines(server, [{ key: a }, { key: a }, { key: b }]), trusted: [a, b], kept: 2, reason: new RegExp(`line 3 of the reply is signed by ${b}, but this peer is ${a}`) },
+    { name: "missing line", lines: [good[0], good[2]], trusted: [a], kept: 1, reason: /line 2 of the reply has seq 2, but the local copy needs seq 1/ },
+    { name: "not JSON", lines: [good[0], "not json", good[2]], trusted: [a], kept: 1, reason: /line 2 of the reply is not JSON/ },
+    { name: "no signer", lines: [good[0], noSigner, good[2]], trusted: [a], kept: 1, reason: /line 2 of the reply has no signer/ },
+  ];
+  mkdirSync(feedPaths(server).dir, { recursive: true });
+  const feed = await startFeedServer({ home: server, port: 0 });
+  try {
+    for (const c of cases) {
+      const client = await tempHome();
+      for (const keyId of c.trusted) trust(server, client, keyId);
+      writeFileSync(feedPaths(server).published, c.lines.map((line) => `${line}\n`).join(""));
+      const result = await run(["feed", "pull", feed.url], { WITNESS_HOME: client });
+      assert.equal(result.code, 3, `${c.name}: ${result.err}`);
+      assert.match(result.err, c.reason, c.name);
+      assert.match(result.out, new RegExp(`^${c.kept} record\\(s\\) appended`), c.name);
+      const copy = remoteFile(a, client);
+      if (c.kept === 0) assert.equal(existsSync(copy), false, c.name);
+      else assert.equal(readFileSync(copy, "utf8"), c.lines.slice(0, c.kept).map((line) => `${line}\n`).join(""), c.name);
+      await rm(client, { recursive: true, force: true });
+    }
+    // A network error is exit 1.
+    const client = await tempHome();
+    const closed = await startFeedServer({ home: client, port: 0 });
+    await closed.close();
+    const down = await run(["feed", "pull", closed.url], { WITNESS_HOME: client });
+    assert.equal(down.code, 1);
+    assert.match(down.err, new RegExp(`request to ${closed.url} failed: ECONNREFUSED`));
+    await rm(client, { recursive: true, force: true });
+  } finally {
+    await feed.close();
+  }
+  await rm(server, { recursive: true, force: true });
+});
+
+test("match: exit 0 when found in any feed file, 1 when not found, 2 on a bad argument, unreadable file or unparseable line", async () => {
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  const [digest] = writeLocalFeed(home, ["doc a"]);
+  publishFeed({ keyId, home });
+  const paths = feedPaths(home);
+  const match = (arg) => run(["feed", "match", ...(arg === undefined ? [] : [arg])], { WITNESS_HOME: home });
+  assert.equal((await match(sha256("doc a"))).code, 0);
+  const hit = await match(digest.toUpperCase());
+  assert.equal(hit.code, 0);
+  assert.deepEqual(hit.out.trim().split("\n"), [`${paths.local}  document`, `${paths.published}  document`]);
+  mkdirSync(paths.remote, { recursive: true });
+  writeFileSync(path.join(paths.remote, "k_0000beef.jsonl"), `${JSON.stringify({ indicator: { kind: "domain", sha256: sha256("evil.example") } })}\n`);
+  const remote = await match(sha256("evil.example"));
+  assert.deepEqual([remote.code, remote.out.trim()], [0, `${path.join(paths.remote, "k_0000beef.jsonl")}  domain`]);
+  assert.equal((await match(sha256("nothing"))).code, 1);
+  assert.equal((await match("xyz")).code, 2);
+  assert.equal((await match(undefined)).code, 2);
+  appendFileSync(path.join(paths.remote, "k_0000beef.jsonl"), "{broken\n");
+  const unparseable = await match(digest);
+  assert.equal(unparseable.code, 2, "an error wins over a hit");
+  assert.match(unparseable.err, /k_0000beef\.jsonl line 2 does not parse/);
+  await rm(path.join(paths.remote, "k_0000beef.jsonl"));
+  await rm(paths.published);
+  mkdirSync(paths.published);
+  const unreadable = await match(digest);
+  assert.equal(unreadable.code, 2);
+  assert.match(unreadable.err, /published\.jsonl cannot be read \(EISDIR\)/);
+  const blank = await tempHome();
+  assert.equal((await run(["feed", "match", digest], { WITNESS_HOME: blank })).code, 1, "no feed files is not found");
+  await rm(blank, { recursive: true, force: true });
   await rm(home, { recursive: true, force: true });
 });
