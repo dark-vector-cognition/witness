@@ -9,7 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
-import { feedPaths, publishFeed, pullFeed, remoteFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
+import { feedPaths, publishFeed, pullFeed, remoteFile, resolveServeHost, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
 import { keySigner } from "../lib/judge.mjs";
 import { keyIdOf, keygen, trustedKey, writeKeyPair } from "../lib/keys.mjs";
 import { GENESIS, sealRecord, sha256 } from "../lib/record.mjs";
@@ -1230,4 +1230,81 @@ test("round 4 item 2: two pulls at once keep both bindings; a URL bound to anoth
     await feeds.b.close();
   }
   for (const h of Object.values(homes)) await rm(h, { recursive: true, force: true });
+});
+
+test("LOCAL-593 item 1: every spelling of an every-interface address needs --any-interface, IPv4-mapped forms included", async () => {
+  const every = [
+    "0.0.0.0", "::", "[::]", "::0", "0::", "0:0:0:0:0:0:0:0", "0000:0000:0000:0000:0000:0000:0000:0000", "::0.0.0.0", "::%lo",
+    "::ffff:0.0.0.0", "::ffff:0:0", "::FFFF:0:0", "::ffff:0000:0000", "0:0:0:0:0:ffff:0:0", "0:0:0:0:0:ffff:0.0.0.0",
+    "0000:0000:0000:0000:0000:ffff:0000:0000", "[::ffff:0:0]", "[::ffff:0.0.0.0]", "::ffff:0:0%lo",
+  ];
+  for (const host of every) {
+    await assert.rejects(resolveServeHost(host), /means every interface \(.*\)\. Pass --any-interface/, `${host} is refused`);
+    await assert.doesNotReject(resolveServeHost(host, { anyInterface: true }), `${host} is allowed with --any-interface`);
+  }
+  // A specific address stays allowed, also when it looks close: a mapped loopback, a mapped 0.0.0.1, a single set bit.
+  const specific = ["127.0.0.1", "10.0.0.1", "::1", "::2", "1::", "::1:0:0", "::ffff:127.0.0.1", "::ffff:7f00:1", "::ffff:0.0.0.1", "::ffff:0:1", "::ffff:1:0", "0:0:0:0:0:ffff:0:1", "1:0:0:0:0:ffff:0:0", "0:0:0:0:1:ffff:0:0"];
+  for (const host of specific) {
+    assert.equal(await resolveServeHost(host), host, `${host} is a specific address`);
+  }
+  const home = await tempHome();
+  for (const host of ["::ffff:0:0", "0:0:0:0:0:ffff:0:0"]) {
+    const result = await runFor(["feed", "serve", "--host", host, "--port", "0"], { WITNESS_HOME: home });
+    assert.equal(result.code, 1, `${host}: ${result.out}${result.err}`);
+    assert.match(result.err, /means every interface \(.*\)\. Pass --any-interface/, host);
+    assert.equal(result.out, "", `${host}: nothing listens`);
+  }
+  await rm(home, { recursive: true, force: true });
+});
+
+test("LOCAL-593 item 2: pull writes the peers.json binding before it appends; a failed write appends nothing", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const url = "http://peer.test/feed";
+  const good = signedLines(server, [{ key: a }, { key: a }]);
+  const paths = feedPaths(client);
+  mkdirSync(paths.remote, { recursive: true });
+  // The review trigger: the temp file of the peers.json write is a directory, so that write fails after the reply passed every check.
+  const temp = `${paths.peers}.${process.pid}.tmp`;
+  mkdirSync(temp);
+  await assert.rejects(pullFeed({ url, home: client, fetchImpl: answer(body(good)) }), (error) => {
+    assert.equal(error.code, "EISDIR");
+    return true;
+  });
+  assert.equal(existsSync(remoteFile(a, client)), false, "no line is appended for a URL whose binding is not on disk");
+  assert.equal(existsSync(paths.peers), false, "peers.json is unchanged");
+  rmSync(temp, { recursive: true });
+  // The other order: the binding is on disk and the append never happened. That state is harmless. The next pull asks for the whole feed.
+  writeFileSync(paths.peers, `${JSON.stringify({ [url]: a })}\n`);
+  const asked = [];
+  const again = await pullFeed({ url, home: client, fetchImpl: answer(body(good), asked) });
+  assert.deepEqual([again.appended, again.keyId], [2, a]);
+  assert.deepEqual(asked, [url], "a bound URL without a local copy asks without ?after");
+  assert.equal(readFileSync(remoteFile(a, client), "utf8"), body(good));
+  assert.deepEqual(JSON.parse(readFileSync(paths.peers, "utf8")), { [url]: a });
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+test("LOCAL-593 item 3: pull reads the reply line by line and stops at the first bad line, so 32 MiB of blank lines fit in a 48 MiB heap", async () => {
+  const home = await tempHome();
+  const reply = Buffer.alloc(32 * 1024 * 1024, 0x0a);
+  const feed = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "application/x-ndjson", "content-length": reply.length });
+    res.end(reply);
+  });
+  await new Promise((done) => feed.listen(0, "127.0.0.1", done));
+  try {
+    const url = `http://127.0.0.1:${feed.address().port}/feed`;
+    // A reply of 33554432 empty lines. One array entry per line cannot fit in a 48 MiB heap, so an eager split crashes the process.
+    const result = await run(["feed", "pull", url], { WITNESS_HOME: home, NODE_OPTIONS: "--max-old-space-size=48" });
+    assert.equal(result.code, 3, result.err.slice(0, 400));
+    assert.match(result.err, /line 1 of the reply is not JSON\. Kept 0 new line\(s\) before it\./);
+    assert.match(result.out, /^0 record\(s\) appended/);
+  } finally {
+    feed.closeAllConnections();
+    await new Promise((done) => feed.close(done));
+  }
+  await rm(home, { recursive: true, force: true });
 });

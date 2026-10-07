@@ -197,6 +197,7 @@ witness feed serve [--host 127.0.0.1] [--port 7480] [--any-interface]
     Read-only HTTP, bound only to --host. Print {"listen": "<url>", "file": "<published.jsonl>"}.
     --host is resolved first, and serve binds that one address. An empty, whitespace or non-string host: exit 1.
     A host that resolves to every interface (0.0.0.0, ::, [::], "0"): exit 1, unless --any-interface is given too.
+    Every spelling counts, also the IPv4-mapped ones: ::ffff:0.0.0.0, ::ffff:0:0, 0:0:0:0:0:ffff:0:0, ::0.0.0.0, and any of them with a %zone.
     GET /feed            published.jsonl as application/x-ndjson, bytes as stored.
     GET /feed?after=<n>  skip the leading lines that parse with an integer seq <= n, then send the bytes after them.
                          A blank or unparseable line stops the skip and is sent as is, so pull rejects it.
@@ -222,12 +223,15 @@ witness feed pull <url>
     signer removed; signature valid; seq and prev continue the local copy (seq 0 and prev GENESIS for a new peer);
     indicator.kind and indicator.sha256 present. An exception while a line is checked is a failed line.
     A reply that does not end with a newline fails at its last line.
+    Lines are read one at a time. The first line that fails stops the check, and the rest of the reply is not split.
     Append each new line that passes, byte for byte, to feed/remote/<key_id>.jsonl.
     At the first line that fails or differs: keep the new lines before it, append nothing after it, print the reason, exit 3.
     Network or file errors, a redirect, or a status other than 200: exit 1. Success: print the count, exit 0.
     The URL is bound to the key when the reply adds lines to the copy or repeats it without a difference.
     The append and the binding run under one exclusive lock per home, remote/peers.json.lock. Under it, pull reads
     peers.json again. If the URL is now bound to another key_id: exit 3, nothing appended, nothing bound.
+    The binding is written first (a temp file and a rename), then the lines are appended. If the binding cannot be written,
+    nothing is appended. A binding without a local copy is harmless: the next pull asks for the whole feed.
     A lock that stays taken for about 1 second: exit 1, nothing changed.
     The reply is capped at 32 MiB and 30 seconds. To accept a new key at a known URL, remove the URL from remote/peers.json.
 
