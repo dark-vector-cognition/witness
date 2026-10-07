@@ -4,7 +4,7 @@
 
 Witness sits between any MCP client (Claude Code, Claude Desktop, Cursor, Cowork, your own harness) and any MCP server. Frames pass through untouched. On the way past, each `tools/call` and its result are digested into an append-only, SHA-256-chained log you can verify, query, and hand to someone else. Arguments and results are hashed, never stored.
 
-> Status: **v0.3 — the recorder, and only the recorder.** Everything in "Real today" runs and is tested. The record format is [SPEC.md](SPEC.md) and is implementable without this code.
+> Status: **v0.3: the recorder, plus three readers of its records: `judge`, `score` and `feed`.** Everything in "Real today" runs and is tested. The record format is [SPEC.md](SPEC.md), the readers' records are [SPEC-0.2.md](SPEC-0.2.md), and both are implementable without this code.
 
 ## 60-second start
 
@@ -53,12 +53,15 @@ Two rules govern the design:
 - **`anchor`.** Append every session's chain head to a checkpoints file that is itself chained; `--git` commits it in `WITNESS_HOME` so your repo history is a clock.
 - **Declared principal.** `--as you@company` (or `WITNESS_AS`) labels every call. `verified` is always `false` in this version.
 - **Secret exclusion by construction.** Keys matching `token | secret | password | authorization | cookie | api_key | credential` never appear in a summary, even when allow-listed with `--allow`.
+- **Readers: `judge` and `score`.** `witness judge <session>` verifies a session chain, gives a fresh model only the metadata view (every `args_summary` removed), and appends a `judge` record to `judge/<session>.jsonl`. `witness score` labels every call from the stream and Brier-scores each judge. See [SPEC-0.2.md](SPEC-0.2.md) sections 4 and 6.
+- **`keygen`.** `witness keygen` makes an ed25519 key pair in `keys/` and prints its `key_id` (`k_` and the first 8 hex characters of the public key digest). It never overwrites a key. `judge --key` and `feed publish --key` sign with it.
+- **Feed relay.** Machines share the indicators of refused calls. `witness feed publish --key <key_id>` signs every new local refusal indicator into `feed/published.jsonl`. `witness feed serve` streams that file read-only on `127.0.0.1:7480` (`--host` and `--port` change it; an empty `--host` is refused, and `0.0.0.0` or `::` needs `--any-interface`). It refuses `published.jsonl` when that name itself is a symbolic link or a hard link. It follows a link at `feed/` or above (see [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md)). It caps replies, concurrent requests and stalled sockets. `witness feed pull <url>` checks every line against the peer's `.pub` in `keys/` and appends the good lines byte for byte to `feed/remote/<key_id>.jsonl`. It stops at the first bad line and exits 3. `witness feed match <sha256>` exits 0 when a digest is in a feed file that verifies, and 2 when any feed file does not verify. Only indicator digests, reasons, a host-name digest and the session id travel. No tool argument travels.
 
 Tested end-to-end against a third-party server (desktop-commander 0.2.50, 26 tools): transparent relay, correct ok/error classification, hashed arguments, verified chain.
 
 ## What it does not claim
 
-No proven identity, no signing key, no external timestamp, no enforcement, no inventory of servers you did not wrap. A chain proves *internal* consistency and detects edits after the fact; an administrator with filesystem access can replace both the log and the verifier. [SPEC.md](SPEC.md) states this per field; [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states it per adversary.
+No proven identity, no signature on session records (only judge and feed records carry one), no external timestamp, no enforcement, no inventory of servers you did not wrap. A chain proves *internal* consistency and detects edits after the fact; an administrator with filesystem access can replace both the log and the verifier. [SPEC.md](SPEC.md) states this per field; [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) states it per adversary.
 
 ## Using it as a library
 
@@ -71,6 +74,7 @@ import { loadCalls, buildReport } from "@darkvectorcognition.ai/witness/analyze"
 ## What it never does
 
 - No product telemetry, hosted account, cloud database, or background upload.
+- No record leaves the machine except through two commands that you run. `witness judge` sends session metadata to the model vendor you pick. `witness feed serve` answers every host that can reach the address you bind. See [docs/PRIVACY.md](docs/PRIVACY.md).
 - No collection of API keys, bearer tokens, cookies, passwords, authorization headers, tool arguments, tool results, prompt bodies, or environment-variable values.
 - No control of any process. It relays and records; it never blocks, rewrites, or approves a call.
 
@@ -83,7 +87,7 @@ Node.js 22.13 or later. No install step.
 ```bash
 git clone https://github.com/dark-vector-cognition/witness && cd witness
 node bin/witness.mjs --help
-npm test     # ~6 seconds, no build
+npm test     # ~25 seconds, no build
 ```
 
 ## Contributing
