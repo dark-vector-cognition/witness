@@ -3,7 +3,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, verify as edVerify } from "node:crypto";
 import { appendFileSync, chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, readFileSync, readdirSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import fs from "node:fs";
 import http from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -1307,4 +1309,95 @@ test("LOCAL-593 item 3: pull reads the reply line by line and stops at the first
     await new Promise((done) => feed.close(done));
   }
   await rm(home, { recursive: true, force: true });
+});
+
+// Wrap node:fs functions while fn runs, so a test can watch or fail the calls that lib/feed.mjs makes.
+// syncBuiltinESMExports pushes each wrapper to the named imports of node:fs, and the finally block restores them.
+async function withFs(wrappers, fn) {
+  const saved = {};
+  for (const [name, wrap] of Object.entries(wrappers)) { saved[name] = fs[name]; fs[name] = wrap(saved[name]); }
+  syncBuiltinESMExports();
+  try { return await fn(); } finally { Object.assign(fs, saved); syncBuiltinESMExports(); }
+}
+
+test("LOCAL-593 review 1: pull fsyncs the binding and remote/ before it opens the copy, then fsyncs the copy and remote/", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const good = signedLines(server, [{ key: a }, { key: a }]);
+  const remote = feedPaths(client).remote;
+  const names = new Map();
+  const calls = [];
+  const inRemote = (file) => typeof file === "string" && (file === remote || file.startsWith(`${remote}${path.sep}`));
+  const watch = {
+    openSync: (real) => (file, flags, ...rest) => {
+      const fd = real(file, flags, ...rest);
+      names.set(fd, String(file));
+      if (inRemote(String(file)) && flags === "a") calls.push(`append ${path.basename(file)}`);
+      return fd;
+    },
+    fsyncSync: (real) => (fd) => { if (inRemote(names.get(fd))) calls.push(`fsync ${path.basename(names.get(fd))}`); return real(fd); },
+    renameSync: (real) => (from, to) => { if (inRemote(String(to))) calls.push(`rename ${path.basename(from)} ${path.basename(to)}`); return real(from, to); },
+  };
+  const result = await withFs(watch, () => pullFeed({ url: "http://peer.test/feed", home: client, fetchImpl: answer(body(good)) }));
+  assert.equal(result.appended, 2);
+  const temp = `peers.json.${process.pid}.tmp`;
+  assert.deepEqual(calls, [`fsync ${temp}`, `rename ${temp} peers.json`, "fsync remote", `append ${a}.jsonl`, `fsync ${a}.jsonl`, "fsync remote"]);
+  assert.equal(readFileSync(remoteFile(a, client), "utf8"), body(good));
+  assert.equal((await stat(remoteFile(a, client))).mode & 0o777, 0o600);
+  assert.equal((await stat(feedPaths(client).peers)).mode & 0o777, 0o600);
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
+});
+
+test("LOCAL-593 review 3: a failed write or rename of peers.json removes the temp file and appends nothing", async () => {
+  const server = await tempHome();
+  const a = keygen(server).keyId;
+  const good = signedLines(server, [{ key: a }]);
+  const url = "http://peer.test/feed";
+  const cases = [["a rename that fails", { renameSync: (real) => (from, to) => { if (String(from).endsWith(".tmp")) throw Object.assign(new Error("EXDEV: cross-device link"), { code: "EXDEV" }); return real(from, to); } }, null, "EXDEV"]];
+  // A write that fails: the temp path is a link to /dev/full, so every write to it is ENOSPC. Linux only.
+  if (existsSync("/dev/full")) cases.push(["a write that fails", {}, (temp) => symlinkSync("/dev/full", temp), "ENOSPC"]);
+  for (const [name, wrappers, prepare, code] of cases) {
+    const client = await tempHome();
+    trust(server, client, a);
+    const paths = feedPaths(client);
+    const temp = `${paths.peers}.${process.pid}.tmp`;
+    mkdirSync(paths.remote, { recursive: true });
+    prepare?.(temp);
+    await assert.rejects(withFs(wrappers, () => pullFeed({ url, home: client, fetchImpl: answer(body(good)) })), (error) => {
+      assert.equal(error.code, code, name);
+      return true;
+    });
+    assert.deepEqual(readdirSync(paths.remote), [], `${name}: no temp file, no peers.json, no copy, no lock`);
+    await rm(client, { recursive: true, force: true });
+  }
+  await rm(server, { recursive: true, force: true });
+});
+
+test("LOCAL-593 review 2: a copy cut part way through an append exits 3 until the operator deletes it and pulls again", async () => {
+  const server = await tempHome();
+  const client = await tempHome();
+  const a = keygen(server).keyId;
+  trust(server, client, a);
+  const good = signedLines(server, [{ key: a }, { key: a }, { key: a }]);
+  const url = "http://peer.test/feed";
+  assert.equal((await pullFeed({ url, home: client, fetchImpl: answer(body(good.slice(0, 1))) })).appended, 1);
+  // The process stopped part way through the append of line 2: the copy ends without a newline.
+  const copy = remoteFile(a, client);
+  appendFileSync(copy, good[1].slice(0, 40));
+  for (const target of [url, "http://mirror.test/feed"]) {
+    await assert.rejects(pullFeed({ url: target, home: client, fetchImpl: answer(body(good)) }), (error) => {
+      assert.equal(error.exitCode, 3, target);
+      assert.match(error.message, /the local copy .* is broken: its last line has no newline\. Nothing appended\./, target);
+      return true;
+    });
+  }
+  // The repair: delete the broken copy and pull again. The binding stays, and the pull asks for the whole feed.
+  rmSync(copy);
+  const asked = [];
+  assert.equal((await pullFeed({ url, home: client, fetchImpl: answer(body(good), asked) })).appended, 3);
+  assert.deepEqual(asked, [url]);
+  assert.equal(readFileSync(copy, "utf8"), body(good));
+  for (const h of [server, client]) await rm(h, { recursive: true, force: true });
 });

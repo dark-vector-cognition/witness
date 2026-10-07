@@ -230,8 +230,11 @@ witness feed pull <url>
     The URL is bound to the key when the reply adds lines to the copy or repeats it without a difference.
     The append and the binding run under one exclusive lock per home, remote/peers.json.lock. Under it, pull reads
     peers.json again. If the URL is now bound to another key_id: exit 3, nothing appended, nothing bound.
-    The binding is written first (a temp file and a rename), then the lines are appended. If the binding cannot be written,
-    nothing is appended. A binding without a local copy is harmless: the next pull asks for the whole feed.
+    The binding is written first: a temp file, fsync, a rename, and an fsync of remote/. Then the lines are appended,
+    and the copy and remote/ are fsynced. If the binding cannot be written, the temp file is removed and nothing is
+    appended. A binding without a local copy is harmless: the next pull asks for the whole feed.
+    If pull stops part way through an append (a kill or ENOSPC), the copy can end without a newline. Every later pull
+    of that key then exits 3 with "the local copy ... is broken". To repair it, delete feed/remote/<key_id>.jsonl and pull again.
     A lock that stays taken for about 1 second: exit 1, nothing changed.
     The reply is capped at 32 MiB and 30 seconds. To accept a new key at a known URL, remove the URL from remote/peers.json.
 
