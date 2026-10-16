@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { verifyChain } from "../lib/record.mjs";
-import { PACKAGE, installedFromRegistry, isWrapped, rewriteConfig, unwrapEntry, wrapEntry } from "../lib/wrap.mjs";
+import { PACKAGE, installedFromRegistry, isWrapped, rewriteConfig, stableNode, unwrapEntry, wrapEntry } from "../lib/wrap.mjs";
 
 const bin = new URL("../bin/witness.mjs", import.meta.url).pathname;
 const fake = new URL("./fixtures/fake-mcp-server.mjs", import.meta.url).pathname;
@@ -40,7 +40,7 @@ test("wrap/unwrap round-trip a config, preserve env, keep a backup, and are idem
   assert.deepEqual(wrapped.changes, ["github"]);
   assert.equal(wrapped.skipped[0].name, "remote");
   const after = JSON.parse(await readFile(file, "utf8"));
-  assert.equal(after.mcpServers.github.command, process.execPath);
+  assert.equal(after.mcpServers.github.command, stableNode(), "the stable node path, not a versioned Cellar path");
   assert.ok(after.mcpServers.github.args[0].endsWith("bin/witness.mjs"));
   assert.deepEqual(after.mcpServers.github.args.slice(1), ["--name", "github", "--as", "alice@example.com", "--", "npx", "-y", "@modelcontextprotocol/server-github"]);
   assert.deepEqual(after.mcpServers.github.env, { GITHUB_TOKEN: "x" }, "env block preserved");
@@ -108,4 +108,18 @@ test("anchor appends chain heads once per change, in a chain of its own", async 
   assert.equal(verifyChain(checkpoints).ok, true);
   assert.ok(checkpoints.every((c) => c.verified === true && /^[0-9a-f]{64}$/.test(c.head)));
   await rm(home, { recursive: true, force: true });
+});
+
+test("wrap writes the stable node symlink, not a versioned Cellar path", async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), "witness-node-"));
+  const cellar = path.join(dir, "Cellar", "node", "26.7.0", "bin");
+  await mkdir(cellar, { recursive: true });
+  const real = path.join(cellar, "node");
+  await writeFile(real, "");
+  const link = path.join(dir, "node");
+  await symlink(real, link);
+  assert.equal(stableNode(real, [link]), link, "Cellar path maps to the symlink that resolves to it");
+  assert.equal(stableNode(real, [path.join(dir, "absent")]), real, "no matching symlink keeps the original");
+  assert.equal(stableNode("/usr/bin/node", [link]), "/usr/bin/node", "non-Cellar paths are left alone");
+  await rm(dir, { recursive: true, force: true });
 });
