@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createPublicKey, verify as edVerify } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import fs, { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -591,6 +592,44 @@ test("review 2: countersign says SAME only for a stored receipt that passes the 
   } finally {
     await second.close();
     await rm(other, { recursive: true, force: true });
+    await env.cleanup();
+  }
+});
+
+async function withFs(wrappers, fn) {
+  const saved = {};
+  for (const [name, wrap] of Object.entries(wrappers)) { saved[name] = fs[name]; fs[name] = wrap(saved[name]); }
+  syncBuiltinESMExports();
+  try { return await fn(); } finally { Object.assign(fs, saved); syncBuiltinESMExports(); }
+}
+
+test("review 4: the notary fsyncs its log before it answers 200, and seal and countersign fsync heads and receipts", async () => {
+  const env = await setup();
+  try {
+    const names = new Map();
+    const calls = [];
+    const watch = {
+      openSync: (real) => (file, ...rest) => { const fd = real(file, ...rest); names.set(fd, String(file)); return fd; },
+      fsyncSync: (real) => (fd) => { const name = names.get(fd) ?? ""; calls.push(`fsync ${path.basename(path.dirname(name))}/${path.basename(name)}`); return real(fd); },
+    };
+    await withFs(watch, async () => {
+      const original = globalThis.fetch;
+      const fetchImpl = async (...args) => { const res = await original(...args); calls.push("reply"); return res; };
+      const result = await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op, fetchImpl });
+      assert.equal(result.sent, true);
+    });
+    const tag = (dir, name) => `fsync ${path.basename(dir)}/${name}`;
+    const order = calls.filter((c) => c === "reply" || c.includes("heads") || c.includes("notary") || c.includes("receipts"));
+    assert.deepEqual(order, [
+      tag(path.join(env.op, "heads"), "s_aaaa0001.jsonl"), tag(env.op, "heads"),
+      tag(path.join(env.no, "notary"), "log.jsonl"), tag(env.no, "notary"),
+      "reply",
+      tag(path.join(env.op, "receipts"), "s_aaaa0001.jsonl"), tag(env.op, "receipts"),
+    ]);
+    assert.equal(statSync(notaryPaths(env.no).log).mode & 0o777, 0o600);
+    assert.equal(statSync(receiptsFile("s_aaaa0001", env.op)).mode & 0o777, 0o600);
+    assert.equal(statSync(headsFile("s_aaaa0001", env.op)).mode & 0o777, 0o600);
+  } finally {
     await env.cleanup();
   }
 });
