@@ -8,9 +8,9 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { CHECK_EXIT, checkSession } from "../lib/check.mjs";
-import { checkHead, headsFile, loadKey, sealSession, signHead } from "../lib/heads.mjs";
+import { checkHead, headDigest, headsFile, loadKey, sealSession, signHead } from "../lib/heads.mjs";
 import { keygen } from "../lib/keys.mjs";
-import { countersignSession, notaryPaths, receiptsFile, startNotaryServer, verifyNotaryLog } from "../lib/notary.mjs";
+import { checkReceipt, countersignSession, notaryPaths, receiptShape, receiptsFile, startNotaryServer, verifyNotaryLog } from "../lib/notary.mjs";
 import { canonical, sealRecord } from "../lib/record.mjs";
 import { SessionLog, logDir } from "../lib/session-log.mjs";
 
@@ -452,4 +452,59 @@ test("notary serve: refuses an empty host and every-interface hosts unless --any
   // A missing key, or a .key without its .pub, is exit 1.
   assert.equal((await run(["notary", "serve", "--key", "k_00000000", "--port", "0"], env)).code, 1);
   await rm(home, { recursive: true, force: true });
+});
+
+test("review 3: a head or receipt signature in any spelling but canonical base64 of 64 bytes is refused", async () => {
+  const env = await setup();
+  try {
+    const { head } = sealSession({ session: "s_aaaa0001", keyId: env.opKey, home: env.op });
+    const last = head.sig.charCodeAt(head.sig.length - 3);
+    // The same 64 bytes spelled four other ways, and 65 bytes.
+    const spellings = [head.sig.replace(/==$/, ""), `${head.sig.slice(0, -3)}${String.fromCharCode(last ^ 1)}==`, `${head.sig}\n`, ` ${head.sig}`, Buffer.alloc(65, 1).toString("base64")];
+    for (const sig of spellings) {
+      const variant = { ...head, sig };
+      assert.notEqual(headDigest(variant), headDigest(head));
+      assert.deepEqual(checkHead(variant), { kind: "malformed", reason: "the head sig is not canonical base64 of 64 bytes" }, JSON.stringify(sig));
+      assert.equal((await post(env.notary.url, variant)).status, 400, JSON.stringify(sig));
+    }
+    assert.equal(existsSync(notaryPaths(env.no).log), false, "no receipt for any spelling");
+    const { receipt } = await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    assert.equal(checkReceipt(receipt, { notaryKeyId: env.noKey, home: env.op }), null);
+    for (const sig of [receipt.signer.sig.replace(/==$/, ""), `${receipt.signer.sig}\n`, ` ${receipt.signer.sig}`]) {
+      const variant = { ...receipt, signer: { ...receipt.signer, sig } };
+      assert.equal(receiptShape(variant), "the receipt signer.sig is not canonical base64 of 64 bytes");
+      assert.equal(checkReceipt(variant, { notaryKeyId: env.noKey, home: env.op }).kind, "malformed");
+    }
+  } finally {
+    await env.cleanup();
+  }
+});
+
+test("review 8: seq and record counts must be safe integers, and ts a strict ISO-8601 UTC timestamp", async () => {
+  const env = await setup();
+  try {
+    const { head } = sealSession({ session: "s_aaaa0001", keyId: env.opKey, home: env.op });
+    const key = loadKey(env.opKey, env.op);
+    const { sig: _sig, ...body } = head;
+    const bad = [
+      [{ seq: 2 ** 60, records: 2 ** 60 + 1 }, /seq is not a safe integer/],
+      [{ seq: Number.MAX_SAFE_INTEGER, records: Number.MAX_SAFE_INTEGER + 1 }, /seq is not a safe integer/],
+      [{ ts: "1" }, /ts is not an ISO-8601 UTC timestamp/],
+      [{ ts: "2026-10-23T02:00:00Z" }, /ts is not an ISO-8601 UTC timestamp/],
+      [{ ts: "2026-02-30T00:00:00.000Z" }, /ts is not an ISO-8601 UTC timestamp/],
+      [{ ts: "2026-10-23T02:00:00.000+00:00" }, /ts is not an ISO-8601 UTC timestamp/],
+    ];
+    for (const [change, reason] of bad) {
+      const signed = signHead({ ...body, ...change }, key);
+      assert.match(checkHead(signed).reason, reason, JSON.stringify(change));
+      assert.equal((await post(env.notary.url, signed)).status, 400, JSON.stringify(change));
+    }
+    assert.equal(checkHead(head), null);
+    const { receipt } = await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    assert.match(receiptShape({ ...receipt, seq: 2 ** 60 }), /seq is not a safe integer/);
+    assert.match(receiptShape({ ...receipt, ts: "yesterday" }), /ts is not an ISO-8601 UTC timestamp/);
+    assert.match(receiptShape({ ...receipt, head: { ...receipt.head, seq: 2 ** 60 } }), /bad sha256, hash, seq/);
+  } finally {
+    await env.cleanup();
+  }
 });
