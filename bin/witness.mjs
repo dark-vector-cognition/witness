@@ -11,6 +11,7 @@ import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
 import { DEFAULT_HOST, DEFAULT_PORT, feedChainRule, matchFeed, publishFeed, pullFeed, readFeedFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
+import { checkSession } from "../lib/check.mjs";
 import { HeadError, sealSession, sessionIds } from "../lib/heads.mjs";
 import { keygen } from "../lib/keys.mjs";
 import { DEFAULT_NOTARY_PORT, countersignSession, startNotaryServer, verifyNotaryLog } from "../lib/notary.mjs";
@@ -54,6 +55,10 @@ function usage(code = 0) {
   witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-interface]
                                 Accept signed heads on POST /receipt and append a signed receipt to notary/log.jsonl. Host rules as feed serve.
   witness notary verify [--key <key_id>]   Walk notary/log.jsonl. Exit 0 intact, 1 read error, 3 broken.
+  witness check <session> --notary <key_id> [--operator <key_id>] [--json]
+                                Offline: chain intact, each head signed and matching the chain, each receipt signed by the notary and naming a head.
+                                Exit 0 ok, 1 error, 2 chain broken, 3 head does not match the chain, 4 bad head signature or key,
+                                5 bad receipt signature or notary key, 6 receipt does not match a head, 7 no head or no receipt.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -208,6 +213,20 @@ if (argv[0] === "countersign") {
     }
   }
   process.exit(code);
+}
+
+if (argv[0] === "check") {
+  const [session] = positionals(1, ["--notary", "--operator"]);
+  const result = checkSession({ session, notaryKeyId: opt("--notary"), operatorKeyId: opt("--operator") });
+  if (argv.includes("--json")) {
+    process.stdout.write(`${JSON.stringify({ session: session ?? null, code: result.code, ok: result.ok, covered: result.covered, failures: result.failures, passed: result.passed, notes: result.notes })}\n`);
+  } else {
+    for (const line of result.passed) process.stdout.write(`OK   ${line}\n`);
+    for (const f of result.failures) process.stdout.write(`FAIL ${f.message}\n`);
+    for (const line of result.notes) process.stdout.write(`NOTE ${line}\n`);
+    process.stdout.write(result.ok ? `${session}: countersigned through seq ${result.covered}\n` : `${session ?? "check"}: ${result.failures.length} failure(s), exit ${result.code}\n`);
+  }
+  process.exit(result.code);
 }
 
 if (argv[0] === "notary") {
