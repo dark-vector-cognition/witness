@@ -10,7 +10,7 @@ import path from "node:path";
 import test from "node:test";
 import { CHECK_EXIT, checkSession } from "../lib/check.mjs";
 import { checkHead, headDigest, headsFile, loadKey, sealSession, signHead } from "../lib/heads.mjs";
-import { keygen } from "../lib/keys.mjs";
+import { fingerprintOf, keygen, pinnedKey } from "../lib/keys.mjs";
 import { checkReceipt, countersignSession, notaryPaths, receiptShape, receiptsFile, startNotaryServer, verifyNotaryLog } from "../lib/notary.mjs";
 import { canonical, sealRecord } from "../lib/record.mjs";
 import { SessionLog, logDir } from "../lib/session-log.mjs";
@@ -679,4 +679,49 @@ test("review 5: notary serve caps requests per second for all clients with 429, 
   assert.equal(bad.code, 1);
   assert.match(bad.err, /--rate must be a number of requests per second above 0/);
   await rm(home, { recursive: true, force: true });
+});
+
+test("review 7: --notary and --operator take the full 64-hex fingerprint; a key_id alone is accepted with a NOTE", async () => {
+  const env = await setup();
+  try {
+    const noFp = fingerprintOf(readFileSync(path.join(env.no, "keys", `${env.noKey}.pub`), "utf8"));
+    const opFp = fingerprintOf(readFileSync(path.join(env.op, "keys", `${env.opKey}.pub`), "utf8"));
+    assert.equal(env.notary.fingerprint, noFp);
+    assert.equal(noFp.slice(0, 8), env.noKey.slice(2));
+    // countersign pins the notary by fingerprint; a key_id alone warns on stderr.
+    const pinned = await run(["countersign", env.notary.url, "s_aaaa0001", "--key", env.opKey, "--notary", noFp], { WITNESS_HOME: env.op });
+    assert.equal(pinned.code, 0, pinned.out + pinned.err);
+    assert.doesNotMatch(pinned.err, /32-bit/);
+    const short = await run(["countersign", env.notary.url, "s_aaaa0001", "--key", env.opKey, "--notary", env.noKey], { WITNESS_HOME: env.op });
+    assert.equal(short.code, 0);
+    assert.match(short.err, new RegExp(`--notary ${env.noKey} is a 32-bit key_id\\. Pin the key: --notary ${noFp}`));
+    const home = await outsider(env, "s_aaaa0001", { operatorPub: true });
+    const full = await run(["check", "s_aaaa0001", "--notary", noFp, "--operator", opFp], { WITNESS_HOME: home });
+    assert.equal(full.code, 0, full.out);
+    assert.match(full.out, new RegExp(`^OK   notary key ${env.noKey} fingerprint ${noFp}$`, "m"));
+    assert.match(full.out, new RegExp(`^OK   operator key ${env.opKey} fingerprint ${opFp}$`, "m"));
+    assert.doesNotMatch(full.out, /^NOTE/m);
+    const byId = checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, operatorKeyId: env.opKey, home });
+    assert.equal(byId.code, 0);
+    assert.ok(byId.notes.includes(`--notary ${env.noKey} is a 32-bit key_id, and any key with that prefix is accepted. Pin the key: --notary ${noFp}`));
+    assert.ok(byId.notes.includes(`--operator ${env.opKey} is a 32-bit key_id, and any key with that prefix is accepted. Pin the key: --operator ${opFp}`));
+    // A fingerprint that shares the 8-hex prefix but not the rest: the .pub found by key_id is not that key.
+    const twin = `${noFp.slice(0, 8)}${noFp.slice(8).split("").reverse().join("")}`;
+    assert.notEqual(twin, noFp);
+    assert.match(pinnedKey(twin, home).problem, new RegExp(`keys/${env.noKey}\\.pub has fingerprint ${noFp}, not ${twin}`));
+    const wrongNotary = await run(["check", "s_aaaa0001", "--notary", twin], { WITNESS_HOME: home });
+    assert.equal(wrongNotary.code, 5, wrongNotary.out);
+    const opTwin = `${opFp.slice(0, 8)}${"0".repeat(56)}`;
+    const wrongOperator = checkSession({ session: "s_aaaa0001", notaryKeyId: noFp, operatorKeyId: opTwin, home });
+    assert.equal(wrongOperator.code, CHECK_EXIT.headSignature);
+    assert.match(wrongOperator.failures[0].message, /has fingerprint [0-9a-f]{64}, not 0*/);
+    assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: "abc", home }).code, CHECK_EXIT.error);
+    // keygen prints the fingerprint for peers to pin.
+    const made = await run(["keygen"], { WITNESS_HOME: home });
+    const madeId = made.out.trim();
+    assert.match(made.err, new RegExp(`fingerprint ${madeId.slice(2)}[0-9a-f]{56}\\. Peers pin the key with it\\.`));
+    await rm(home, { recursive: true, force: true });
+  } finally {
+    await env.cleanup();
+  }
 });

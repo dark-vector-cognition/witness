@@ -62,17 +62,19 @@ The notary does not need the operator's key in its `keys/`. It attests only that
 
 ## 4. Offline check
 
-`witness check <session> --notary <key_id>` reads only `log/<session>.jsonl`, `heads/<session>.jsonl`, `receipts/<session>.jsonl` and `keys/*.pub` under `$WITNESS_HOME`. It writes nothing and opens no socket. An outside party copies those files into an empty directory, adds the notary's `.pub` (and optionally the operator's) to `keys/`, and sets `WITNESS_HOME` to it.
+`witness check <session> --notary <fingerprint>` reads only `log/<session>.jsonl`, `heads/<session>.jsonl`, `receipts/<session>.jsonl` and `keys/*.pub` under `$WITNESS_HOME`. It writes nothing and opens no socket. An outside party copies those files into an empty directory, adds the notary's `.pub` (and optionally the operator's) to `keys/`, and sets `WITNESS_HOME` to it.
 
 The checks, in order:
 
 1. The session chain verifies (SPEC.md), and every `seq` equals its position.
-2. Every head holds (section 2). With `--operator <key_id>`, every head's `key_id` equals it and its `public_key` is the key in the trusted `keys/<key_id>.pub`.
+2. Every head holds (section 2). With `--operator`, every head's `key_id` is that key's and its `public_key` has that key's fingerprint, and the trusted `keys/<key_id>.pub` holds that key.
 3. Every head names this session, and the record at position `head.seq` exists and has `hash` equal to `head.hash`. The chain may continue past a head.
-4. `keys/<notary key_id>.pub` is trusted: present, ed25519, hashing to the key_id.
+4. `keys/<notary key_id>.pub` is trusted: present, ed25519, hashing to the key_id, and, when `--notary` is a fingerprint, having exactly that fingerprint.
 5. Every receipt has the fields of section 3, is signed by the `--notary` key, its `hash` recomputes, and its signature is valid.
 6. Every receipt's `head.sha256` is the digest of a head in `heads/<session>.jsonl`, and its `session`, `seq`, `hash` and `key_id` equal that head's.
 7. There is at least one head and at least one receipt.
+
+`--notary` and `--operator` each take a fingerprint: 64 lowercase hex characters, sha256 of the key's SPKI DER. `key_id` is its first 8 hex characters. A fingerprint pins one key. A `key_id` is also accepted as a shorthand, but it holds 32 bits, so any key whose fingerprint starts with those 8 hex characters passes; check then prints a NOTE with the full fingerprint to pin. Check prints the fingerprint of every key it used. `witness keygen` prints the fingerprint on stderr, and `notary serve` prints it on start.
 
 Every failure is reported on its own line. The exit code is that of the first failure in the order above: every head's signature check (step 2) runs before any head is matched to the chain (step 3), and every receipt's signature check (step 5) before any receipt is matched to a head (step 6). The order of lines in the files does not change the code.
 
@@ -102,7 +104,7 @@ witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-inte
     Bind only to --host, with the host rules of feed serve (SPEC-0.2 section 6): an empty, whitespace or non-string host
     and every spelling of an every-interface address exit 1, unless --any-interface is given for the latter.
     keys/<key_id>.key and keys/<key_id>.pub must both belong to key_id. notary/log.jsonl must verify (section 3)
-    and end with a newline, or serve exits 3 and does not listen (1 for a read error). Print {"listen": "<url>", "key_id", "log"}.
+    and end with a newline, or serve exits 3 and does not listen (1 for a read error). Print {"listen": "<url>", "key_id", "fingerprint", "log"}.
     POST /receipt   body: one head statement as JSON.
         400  the body is not UTF-8 JSON, or not a head statement (shape)
         413  the body is larger than 64 KiB; a declared Content-Length over the cap is refused before the body is read
@@ -122,9 +124,10 @@ witness notary verify [--key <key_id>]
     Walk notary/log.jsonl (section 3). With --key, every signer must be that key.
     Exit 0 intact, 1 read error, 3 broken (also for invalid UTF-8 or a blank or unparseable line).
 
-witness countersign <url> [<session>|--all] --key <key_id> [--notary <key_id>]
+witness countersign <url> [<session>|--all] --key <key_id> [--notary <fingerprint|key_id>]
     url is the notary's /receipt endpoint. userinfo and fragment are removed before the request.
-    With --notary, keys/<key_id>.pub must be trusted before anything is sent (else exit 1).
+    With --notary, keys/<key_id>.pub must be trusted, and have the fingerprint when one is given, before anything is
+    sent (else exit 1). A key_id alone prints a warning with the fingerprint to pin.
     For each session: seal as above. If a stored receipt in receipts/<session>.jsonl names the last head and passes
     every check below that a new receipt must pass, with the --notary key when given, send nothing (SAME). A stored
     receipt that fails, or is signed by another key than --notary, does not count. Without --notary, any stored receipt
@@ -136,7 +139,7 @@ witness countersign <url> [<session>|--all] --key <key_id> [--notary <key_id>]
     Append the receipt to receipts/<session>.jsonl. One line per session: SIGNED, SAME or FAIL.
     Exit 0 ok, 1 error (network, status other than 200, key), 3 broken chain, broken file or bad receipt.
 
-witness check <session> --notary <key_id> [--operator <key_id>] [--json]
+witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|key_id>] [--json]
     Section 4. Lines: OK for each check that holds, FAIL for each failure, NOTE for the operator key source and
     for records after the last countersigned head. --json prints one object with code, failures, passed, notes, covered.
 ```

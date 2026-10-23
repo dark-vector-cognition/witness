@@ -41,19 +41,19 @@ A notary is another party with its own Witness home and key. It receipts your si
 
 ```bash
 # the notary, on its own machine and home
-witness keygen                                   # prints its key_id, say k_7b04d6a2; give its .pub to the operator
+witness keygen                                   # prints its key_id, say k_7b04d6a2, and its fingerprint; give its .pub to the operator
 witness notary serve --key k_7b04d6a2            # POST /receipt on 127.0.0.1:7481
 
 # the operator
 witness keygen                                   # k_3f2a9c1e
 cp k_7b04d6a2.pub ~/.witness/keys/               # trust the notary key
-witness countersign http://127.0.0.1:7481/receipt --all --key k_3f2a9c1e --notary k_7b04d6a2
+witness countersign http://127.0.0.1:7481/receipt --all --key k_3f2a9c1e --notary <notary fingerprint>
 
 # anyone, offline, with copies of log/, heads/ and receipts/ for one session and the notary .pub in keys/
-WITNESS_HOME=./copy witness check s_1a2b3c4d --notary k_7b04d6a2
+WITNESS_HOME=./copy witness check s_1a2b3c4d --notary <notary fingerprint>
 ```
 
-`check` exits 0 when the chain is intact, the record at the sealed `seq` has the sealed hash, the head is signed, and a receipt signed by the notary names that head. Each other outcome has its own exit code ([SPEC-0.4.md](SPEC-0.4.md) section 4).
+`check` exits 0 when the chain is intact, the record at the sealed `seq` has the sealed hash, the head is signed, and a receipt signed by the notary names that head. Each other outcome has its own exit code ([SPEC-0.4.md](SPEC-0.4.md) section 4). The fingerprint is 64 hex characters; a `key_id` also works but holds only 32 bits, and check says so.
 
 ## Why it exists
 

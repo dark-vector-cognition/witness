@@ -110,7 +110,7 @@ Scope: `witness seal`, `witness notary serve`, `witness notary verify`, `witness
 
 ### What a passing check proves
 
-`witness check <session> --notary <key_id>` exits 0 when all of these hold: the session chain is intact; the record at each head's `seq` has the head's `hash`; each head is signed by the key it carries (and by the `--operator` key, when given); and a receipt signed by the notary key names that head. Together: a chain whose record at `seq` had this `hash` existed no later than the receipt's `ts`, by the notary's clock, and the files checked still hold that chain up to `seq`.
+`witness check <session> --notary <fingerprint>` exits 0 when all of these hold: the session chain is intact; the record at each head's `seq` has the head's `hash`; each head is signed by the key it carries (and by the `--operator` key, when given); and a receipt signed by the notary key names that head. Together: a chain whose record at `seq` had this `hash` existed no later than the receipt's `ts`, by the notary's clock, and the files checked still hold that chain up to `seq`.
 
 It proves this against one adversary: **an operator or administrator who controls the operator's machine but not the notary or the notary key.** After the receipt, that adversary cannot edit, insert, delete or reorder a record at or before the sealed `seq` without check failing: a plain edit breaks the chain (exit 2), and a chain rebuilt after an edit no longer has the sealed hash at the sealed `seq` (exit 3). A forged or replaced head fails its signature (exit 4), and the receipt still names the original head (exit 6). Replacing the verifier on the operator's machine does not help, because check runs on the outside party's machine with its own copy of the code, or with any implementation of SPEC-0.4.
 
@@ -118,7 +118,7 @@ It proves this against one adversary: **an operator or administrator who control
 
 - **An operator who rewrites and countersigns again.** The operator can seal a rewritten chain and get a fresh receipt. Check against only the rewritten files then passes. The new receipt has a later notary `ts` and a higher notary `seq`, and the notary log still holds the receipt for the original head. The rewrite shows when the outside party holds an earlier receipt, or compares with the notary log.
 - **An operator who deletes receipts or heads.** Check exits 7. The notary log still holds every receipt it issued.
-- **An operator key compromise.** Whoever holds the operator `.key` can sign any head. A receipt still fixes when each head reached the notary, so a stolen key cannot backdate a head. Without `--operator`, check takes the key from the head; with it, a head signed by another key fails (exit 4).
+- **An operator key compromise.** Whoever holds the operator `.key` can sign any head. A receipt still fixes when each head reached the notary, so a stolen key cannot backdate a head. Without `--operator`, check takes the key from the head; with `--operator <fingerprint>`, a head signed by another key fails (exit 4).
 - **A notary that colludes with the operator, or a notary key compromise.** Receipts can then be issued at any time with any `ts`. Check cannot tell. The receipt is worth exactly the independence of the notary and the safety of its key.
 - **A notary that shows different logs to different parties.** There is no public transparency log. A party that holds only its own receipts cannot see a split view.
 - **The network path.** Countersign uses plain HTTP unless the URL is `https://`. A party on the path can drop, delay or answer for the notary. It cannot forge a receipt that passes: countersign checks the receipt names the sent head and its hash recomputes, and with the notary `.pub` in `keys/` it checks the signature and stores nothing on a failure (exit 3). Without the `.pub`, countersign stores the receipt and reports it unverified; check verifies it later against the notary key.
@@ -130,6 +130,6 @@ It proves this against one adversary: **an operator or administrator who control
 
 - Records after the last countersigned head are covered by nothing. A tail truncated back to the sealed `seq` is not detected.
 - `ts` in a receipt is the notary's clock. There is no timestamp authority.
-- `key_id` holds 32 bits of the key digest. Compare the whole `.pub` when you accept a notary or operator key, as for feed peers.
+- `key_id` holds 32 bits of the key digest, so a key with the same `key_id` can be made with about 2^32 tries. `check --notary` and `--operator`, and `countersign --notary`, take the full 64-hex fingerprint and then accept only that key. Given only a `key_id`, they accept any `.pub` with that prefix and print a warning with the fingerprint to pin. Get the fingerprint from the notary or operator over a channel you trust, not from the files you check.
 - There is no key revocation or rotation for operator or notary keys.
 - A receipt says nothing about whether a record is true, or about calls that never crossed a wrapped server.
