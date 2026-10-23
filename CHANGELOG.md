@@ -5,11 +5,12 @@
 A countersigned logbook. See [SPEC-0.4.md](SPEC-0.4.md).
 
 - **`witness seal`.** Signs the head of a session chain (session, last `seq` and `hash`, record count, time, `key_id`, public key) with an ed25519 key from `keys/`, into `heads/<session>.jsonl`. A broken chain is not sealed.
-- **`witness notary serve` and `witness notary verify`.** A notary, run by another party with its own key, checks a posted head's signature and `key_id`, appends a signed receipt to its own chain `notary/log.jsonl`, and returns it. Host rules, body cap, concurrency cap and stall limit as `feed serve`. `notary verify` walks the chain.
-- **`witness countersign <url>`.** Seals when needed, sends each new head, checks the receipt and stores it in `receipts/<session>.jsonl`.
-- **`witness check <session> --notary <key_id>`.** Offline verifier for an outside party: chain intact, head at its `seq`, head signature, receipt signature, receipt names the head. Exit codes 0 to 7, one per kind of failure.
+- **`witness notary serve` and `witness notary verify`.** A notary, run by another party with its own key, checks a posted head's signature and `key_id`, appends a signed receipt to its own chain `notary/log.jsonl`, and returns it. Host rules, body cap, concurrency cap and stall limit as `feed serve`, plus `--rate` requests per second for all clients (default 10, then 429). The log is fsynced before each 200. `notary verify` walks the chain.
+- **`witness countersign <url>`.** Seals when needed, sends each new head, checks the receipt and stores it in `receipts/<session>.jsonl`. A stored receipt counts as already countersigned only when it passes the same checks with the requested notary key.
+- **`witness check <session> --notary <key_id>`.** Offline verifier for an outside party: chain intact, head at its `seq`, head signature, receipt signature, receipt names the head. Exit codes 0 to 8, one per kind of failure, in the order of SPEC-0.4 section 4. `--notary-log <file>` checks the session against a copy of the notary's log and shows a log that was rewritten and countersigned again (exit 8). `--notary` and `--operator` take the full 64-hex key fingerprint; a `key_id` is a 32-bit shorthand and check notes it. `keygen` and `notary serve` print the fingerprint.
 - **`docs/FIELD-MAP.md`.** Maps record fields to the audit-event list in IETF draft-ietf-wimse-aims-00 Section 11, and names the items Witness does not record.
 - `readFeedFile` also returns the exit code of its problem, so a notary log line that does not parse counts as a broken log.
+- Signatures in heads and receipts must be canonical base64 of 64 bytes, `seq` and counts safe integers, and `ts` an ISO-8601 UTC timestamp with milliseconds.
 - Session record format unchanged: still `v: "0.1"`. Heads and receipts carry `v: "0.4"`.
 
 ## 0.3.0 — 2026-09-13
