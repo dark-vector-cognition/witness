@@ -70,10 +70,10 @@ The checks, in order:
 2. Every head holds (section 2). With `--operator`, every head's `key_id` is that key's and its `public_key` has that key's fingerprint, and the trusted `keys/<key_id>.pub` holds that key.
 3. Every head names this session, and the record at position `head.seq` exists and has `hash` equal to `head.hash`. The chain may continue past a head.
 4. `keys/<notary key_id>.pub` is trusted: present, ed25519, hashing to the key_id, and, when `--notary` is a fingerprint, having exactly that fingerprint.
-5. Every receipt has the fields of section 3, is signed by the `--notary` key, its `hash` recomputes, and its signature is valid.
-6. Every receipt's `head.sha256` is the digest of a head in `heads/<session>.jsonl`, and its `session`, `seq`, `hash` and `key_id` equal that head's.
-7. There is at least one head and at least one receipt.
-8. With `--notary-log <file>`, a copy of the notary's `notary/log.jsonl` that the checker got from the notary: the copy verifies (section 3) under the `--notary` key; every receipt in it whose `head.session` is this session names a head in `heads/<session>.jsonl`; and every receipt in `receipts/<session>.jsonl` is in it at its `seq`, with the same `hash`.
+5. Every receipt has the fields of section 3. A receipt whose `signer.key_id` is not the `--notary` key_id is from another notary: it is skipped, with a NOTE naming that key and its fingerprint when `keys/` holds it, and steps 5, 6 and 8 do not apply to it. Every other receipt is signed by the `--notary` key: its `hash` recomputes and its signature is valid under that key. A receipt that names the `--notary` key_id but fails its signature fails here, also when another key made it.
+6. Every receipt from the `--notary` key `head.sha256` is the digest of a head in `heads/<session>.jsonl`, and its `session`, `seq`, `hash` and `key_id` equal that head's.
+7. There is at least one head, at least one valid receipt from the `--notary` key, and one for every head in `heads/<session>.jsonl` that a skipped receipt names. A session countersigned with notary A and then notary B therefore checks under A and under B, as long as each notary receipted each head that was sent to a notary.
+8. With `--notary-log <file>`, a copy of the notary's `notary/log.jsonl` that the checker got from the notary: the copy verifies (section 3) under the `--notary` key; every receipt in it whose `head.session` is this session names a head in `heads/<session>.jsonl`; and every receipt from the `--notary` key in `receipts/<session>.jsonl` is in it at its `seq`, with the same `hash`.
 
 Steps 1 to 7 use only files the operator can hand over. An operator who rewrote a log and sealed and countersigned the rewrite hands over files that pass them (section 6). Step 8 is what shows that rewrite: the notary log still holds the receipt for the original head, and that head is not among the presented heads.
 
@@ -88,9 +88,9 @@ Every failure is reported on its own line. The exit code is that of the first fa
 | 2 | the session chain is broken, also by a blank, unparseable or non-UTF-8 line |
 | 3 | a head does not match the chain: another hash at its `seq`, its `seq` past the end, or another session |
 | 4 | a head is malformed, its `key_id` does not match its `public_key`, its signature fails, or it is not the `--operator` key |
-| 5 | a receipt is malformed or not signed by the `--notary` key, that key is not trusted, or the receipt's hash or signature fails |
+| 5 | a receipt is malformed, the `--notary` key is not trusted, or a receipt that names the `--notary` key_id fails its hash or signature |
 | 6 | a receipt names no head in `heads/<session>.jsonl`, or names it with other values |
-| 7 | no head, or no receipt |
+| 7 | no head, no valid receipt from the `--notary` key, or a head that another notary receipted and the `--notary` key did not |
 | 8 | with `--notary-log`: the copy does not verify, receipts a head of this session that is not presented, or lacks a presented receipt |
 
 The output names the highest `seq` covered by a valid receipt, and the records after it, which no receipt covers.

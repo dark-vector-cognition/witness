@@ -53,7 +53,7 @@ witness countersign http://127.0.0.1:7481/receipt --all --key k_3f2a9c1e --notar
 WITNESS_HOME=./copy witness check s_1a2b3c4d --notary <notary fingerprint>
 ```
 
-`check` exits 0 when the chain is intact, the record at the sealed `seq` has the sealed hash, the head is signed, and a receipt signed by the notary names that head. Each other outcome has its own exit code ([SPEC-0.4.md](SPEC-0.4.md) section 4). The fingerprint is 64 hex characters; a `key_id` also works but holds only 32 bits, and check says so.
+`check` exits 0 when the chain is intact, the record at the sealed `seq` has the sealed hash, the head is signed, and a receipt signed by the notary names that head. Receipts from other notaries are skipped with a note, so a session countersigned with two notaries checks under either key. Each other outcome has its own exit code ([SPEC-0.4.md](SPEC-0.4.md) section 4). The fingerprint is 64 hex characters; a `key_id` also works but holds only 32 bits, and check says so.
 
 ## Why it exists
 

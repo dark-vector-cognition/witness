@@ -306,15 +306,16 @@ test("check: a receipt for a different head exits 6", async () => {
   }
 });
 
-test("check: a receipt checked against the wrong notary key exits 5", async () => {
+test("check: a receipt checked against the wrong notary key is skipped (exit 7), and an untrusted or forged notary key exits 5", async () => {
   const env = await setup();
   try {
     await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
     const home = await outsider(env, "s_aaaa0001", { operatorPub: true });
-    // Another trusted key in keys/: the receipt is not signed by it.
+    // Another trusted key in keys/: the receipt is not signed by it, so it is skipped and no receipt is left.
     const result = await run(["check", "s_aaaa0001", "--notary", env.opKey], { WITNESS_HOME: home });
-    assert.equal(result.code, 5, result.out);
-    assert.match(result.out, new RegExp(`^FAIL receipt 1 of receipts/s_aaaa0001\\.jsonl: the receipt is signed by ${env.noKey}, not ${env.opKey}$`, "m"));
+    assert.equal(result.code, 7, result.out);
+    assert.match(result.out, new RegExp(`^NOTE receipts signed by ${env.noKey} \\(fingerprint [0-9a-f]{64}\\) are not from the --notary key ${env.opKey} and are skipped$`, "m"));
+    assert.match(result.out, new RegExp(`^FAIL no valid receipt from the --notary key ${env.opKey} in receipts/s_aaaa0001\\.jsonl$`, "m"));
     // The right key_id, but its .pub holds another key: not trusted.
     copyFileSync(path.join(home, "keys", `${env.opKey}.pub`), path.join(home, "keys", `${env.noKey}.pub`));
     const swapped = await run(["check", "s_aaaa0001", "--notary", env.noKey], { WITNESS_HOME: home });
@@ -533,7 +534,7 @@ test("review 6: the exit code follows the order of SPEC-0.4 section 4, not the o
     const flipped = Buffer.from(own.signer.sig, "base64"); flipped[0] ^= 1;
     writeJson(receiptsFile("s_aaaa0001", home), [other, { ...own, signer: { ...own.signer, sig: flipped.toString("base64") } }]);
     const receipts = checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, home });
-    assert.deepEqual(receipts.failures.map((f) => f.code), [CHECK_EXIT.receiptSignature, CHECK_EXIT.receiptHead]);
+    assert.deepEqual(receipts.failures.map((f) => f.code), [CHECK_EXIT.receiptSignature, CHECK_EXIT.receiptHead, CHECK_EXIT.missing]);
     assert.equal(receipts.code, CHECK_EXIT.receiptSignature);
     await rm(home, { recursive: true, force: true });
   } finally {
@@ -765,6 +766,58 @@ test("review 1: a log rewritten and countersigned again passes on the operator's
     assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, notaryLog: path.join(home, "nope.jsonl"), home }).code, CHECK_EXIT.error);
     for (const dir of [home, honest]) await rm(dir, { recursive: true, force: true });
   } finally {
+    await env.cleanup();
+  }
+});
+
+test("two notaries: a session countersigned with A and then B checks under A and under B; a forged receipt claiming B fails under B", async () => {
+  const env = await setup({ s_aaaa0001: 3 });
+  const homeB = await tempHome();
+  const keyB = keygen(homeB).keyId;
+  trust(homeB, env.op, keyB);
+  const notaryB = await startNotaryServer({ home: homeB, keyId: keyB, port: 0, limits: { rate: 10_000 } });
+  try {
+    await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    const viaB = await countersignSession({ url: notaryB.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: keyB, home: env.op });
+    assert.equal(viaB.sent, true);
+    const home = await outsider(env, "s_aaaa0001");
+    trust(homeB, home, keyB);
+    const fpA = fingerprintOf(readFileSync(path.join(env.no, "keys", `${env.noKey}.pub`), "utf8"));
+    const fpB = fingerprintOf(readFileSync(path.join(homeB, "keys", `${keyB}.pub`), "utf8"));
+    for (const [fp, other, otherFp] of [[fpA, keyB, fpB], [fpB, env.noKey, fpA]]) {
+      const result = await run(["check", "s_aaaa0001", "--notary", fp], { WITNESS_HOME: home });
+      assert.equal(result.code, 0, result.out);
+      assert.match(result.out, new RegExp(`^NOTE receipts signed by ${other} \\(fingerprint ${otherFp}\\) are not from the --notary key k_${fp.slice(0, 8)} and are skipped$`, "m"));
+      assert.match(result.out, /^s_aaaa0001: countersigned through seq 2$/m);
+    }
+    // Each notary log, checked with its own key, also passes: the other notary's receipt is not in it and is skipped.
+    const logA = path.join(home, "a.jsonl"); copyFileSync(notaryPaths(env.no).log, logA);
+    const logB = path.join(home, "b.jsonl"); copyFileSync(notaryPaths(homeB).log, logB);
+    assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: fpA, notaryLog: logA, home }).code, 0);
+    assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: fpB, notaryLog: logB, home }).code, 0);
+    // A receipt that claims B's key_id but is signed by A's key: under B it is checked, not skipped, and exits 5.
+    const file = receiptsFile("s_aaaa0001", home);
+    const [fromA, fromB] = readJson(file);
+    const { signer: _s, ...bodyA } = fromA;
+    const forged = { ...bodyA, signer: { ...fromA.signer, key_id: keyB } };
+    writeJson(file, [fromA, forged]);
+    const underB = checkSession({ session: "s_aaaa0001", notaryKeyId: fpB, home });
+    assert.equal(underB.code, CHECK_EXIT.receiptSignature, JSON.stringify(underB.failures));
+    assert.match(underB.failures[0].message, /^receipt 2 of receipts\/s_aaaa0001\.jsonl: the receipt has a bad signature$/);
+    // A head that only B receipted: under A it has no receipt from A, exit 7.
+    writeSession(env.op, "s_aaaa0001", 2, 3);
+    await countersignSession({ url: notaryB.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: keyB, home: env.op });
+    const grown = await outsider(env, "s_aaaa0001");
+    trust(homeB, grown, keyB);
+    const underA = checkSession({ session: "s_aaaa0001", notaryKeyId: fpA, home: grown });
+    assert.equal(underA.code, CHECK_EXIT.missing);
+    assert.match(underA.failures[0].message, new RegExp(`^head 2 of heads/s_aaaa0001\\.jsonl \\(seq 4\\) has a receipt from ${keyB} but none from the --notary key ${env.noKey}$`));
+    assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: fpB, home: grown }).code, 0);
+    assert.equal(fromB.signer.key_id, keyB);
+    for (const dir of [home, grown]) await rm(dir, { recursive: true, force: true });
+  } finally {
+    await notaryB.close();
+    await rm(homeB, { recursive: true, force: true });
     await env.cleanup();
   }
 });
