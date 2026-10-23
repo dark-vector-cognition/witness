@@ -52,8 +52,9 @@ function usage(code = 0) {
   witness countersign <url> [<session>|--all] --key <key_id> [--notary <key_id>]
                                 Seal if needed, send each head to a notary's /receipt, check the receipt, append it to receipts/<session>.jsonl.
                                 Exit 0 ok, 1 error, 3 broken chain or bad receipt.
-  witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-interface]
+  witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-interface] [--rate 10]
                                 Accept signed heads on POST /receipt and append a signed receipt to notary/log.jsonl. Host rules as feed serve.
+                                --rate caps requests per second for all clients together; more get 429.
   witness notary verify [--key <key_id>]   Walk notary/log.jsonl. Exit 0 intact, 1 read error, 3 broken.
   witness check <session> --notary <key_id> [--operator <key_id>] [--json]
                                 Offline: chain intact, each head signed and matching the chain, each receipt signed by the notary and naming a head.
@@ -240,7 +241,9 @@ if (argv[0] === "notary") {
     const port = Number(opt("--port", String(DEFAULT_NOTARY_PORT)));
     if (!Number.isInteger(port) || port < 0 || port > 65535) fail(new Error("--port must be an integer from 0 to 65535"));
     try {
-      const notary = await startNotaryServer({ keyId: opt("--key"), host, port, anyInterface: argv.includes("--any-interface"), onWarn: (message) => process.stderr.write(`[witness] ${message}\n`) });
+      const rate = Number(opt("--rate", "10"));
+      if (!Number.isFinite(rate) || rate <= 0) throw new Error("--rate must be a number of requests per second above 0");
+      const notary = await startNotaryServer({ keyId: opt("--key"), host, port, anyInterface: argv.includes("--any-interface"), limits: { rate }, onWarn: (message) => process.stderr.write(`[witness] ${message}\n`) });
       process.stdout.write(`${JSON.stringify({ listen: notary.url, key_id: notary.keyId, log: notary.file })}\n`);
       process.stderr.write(`[witness] notary ${notary.keyId} accepting heads at ${notary.url}. Ctrl-C to stop.\n`);
       if (!/^(127\.|::1$)/.test(notary.host)) process.stderr.write(`[witness] ${notary.host} is not a loopback address. Every host that can reach it can ask for receipts.\n`);

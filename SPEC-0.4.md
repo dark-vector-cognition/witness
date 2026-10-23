@@ -98,7 +98,7 @@ witness seal [<session>|--all] --key <key_id>
     keys/<key_id>.key must hold an ed25519 key that hashes to key_id. No .pub is needed. The private key is never printed.
     One line per session: SEALED, SAME (already sealed) or FAIL. Exit 0 ok, 1 error, 3 broken chain or heads file.
 
-witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-interface]
+witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-interface] [--rate 10]
     Bind only to --host, with the host rules of feed serve (SPEC-0.2 section 6): an empty, whitespace or non-string host
     and every spelling of an every-interface address exit 1, unless --any-interface is given for the latter.
     keys/<key_id>.key and keys/<key_id>.pub must both belong to key_id. notary/log.jsonl must verify (section 3)
@@ -107,13 +107,16 @@ witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-inte
         400  the body is not UTF-8 JSON, or not a head statement (shape)
         413  the body is larger than 64 KiB; a declared Content-Length over the cap is refused before the body is read
         422  key_id does not match public_key, or the signature does not verify
-        200  the receipt, one JSON line, application/json. It is appended to notary/log.jsonl before the reply.
+        200  the receipt, one JSON line, application/json. It is appended to notary/log.jsonl, and the file and
+             notary/ are fsynced, before the reply.
+        429  more than --rate requests per second (default 10, a burst of the same size), for all clients
+             together; Retry-After: 1
         500  the log cannot be written, or no longer verifies; every later request then gets 500
-    Another method on /receipt: 405 with Allow: POST. Every other path: 404. A 404, 405, 413 or 503 closes its connection.
+    Another method on /receipt: 405 with Allow: POST. Every other path: 404. A 404, 405, 413, 429 or 503 closes its connection.
     At most 8 requests at once; another gets 503 with Retry-After: 1. A socket with no traffic for 30 seconds is
     destroyed, and a request must arrive in 30 seconds. Appends hold the lock notary/log.jsonl.lock.
-    Before each append, the last line on disk must be the last line this process knows; if not, the whole log is
-    verified again.
+    The last receipt stays in memory. Before each append, the file must still end with that receipt's line at the size
+    this process left it, which reads only that line; if not, the whole log is verified again.
 
 witness notary verify [--key <key_id>]
     Walk notary/log.jsonl (section 3). With --key, every signer must be that key.

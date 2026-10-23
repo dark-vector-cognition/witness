@@ -56,7 +56,8 @@ async function setup(sessions = { s_aaaa0001: 5 }) {
   const noKey = keygen(no).keyId;
   trust(no, op, noKey);
   for (const [session, n] of Object.entries(sessions)) writeSession(op, session, n);
-  const notary = await startNotaryServer({ home: no, keyId: noKey, port: 0 });
+  // Tests that are not about the rate cap must not trip it.
+  const notary = await startNotaryServer({ home: no, keyId: noKey, port: 0, limits: { rate: 10_000 } });
   const cleanup = async () => { await notary.close(); await rm(op, { recursive: true, force: true }); await rm(no, { recursive: true, force: true }); };
   return { op, no, opKey, noKey, notary, cleanup };
 }
@@ -398,7 +399,7 @@ test("notary verify: a broken notary log exits 3, and notary serve refuses to st
 test("notary serve: caps the body at 413, answers 405, 404 and 400, and caps concurrent requests at 503", async () => {
   const home = await tempHome();
   const { keyId } = keygen(home);
-  const notary = await startNotaryServer({ home, keyId, port: 0, limits: { maxBody: 1024, maxConcurrent: 2, stallMs: 2000 } });
+  const notary = await startNotaryServer({ home, keyId, port: 0, limits: { maxBody: 1024, maxConcurrent: 2, stallMs: 2000, rate: 10_000 } });
   try {
     // A declared length over the cap is refused before the body is read.
     const declared = await rawRequest(notary.port, `POST /receipt HTTP/1.1\r\nHost: n\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n${"x".repeat(100)}`);
@@ -566,7 +567,7 @@ test("review 2: countersign says SAME only for a stored receipt that passes the 
   const env = await setup();
   const other = await tempHome();
   const otherKey = keygen(other).keyId;
-  const second = await startNotaryServer({ home: other, keyId: otherKey, port: 0 });
+  const second = await startNotaryServer({ home: other, keyId: otherKey, port: 0, limits: { rate: 10_000 } });
   try {
     // A receipt from the first notary, stored unverified: this home has no .pub for it.
     await rm(path.join(env.op, "keys", `${env.noKey}.pub`));
@@ -632,4 +633,50 @@ test("review 4: the notary fsyncs its log before it answers 200, and seal and co
   } finally {
     await env.cleanup();
   }
+});
+
+test("review 5: notary serve caps requests per second for all clients with 429, and checks its tail by reading one line", async () => {
+  const env = await setup();
+  const { head } = sealSession({ session: "s_aaaa0001", keyId: env.opKey, home: env.op });
+  await env.notary.close();
+  const notary = await startNotaryServer({ home: env.no, keyId: env.noKey, port: 0, limits: { rate: 3 } });
+  try {
+    const replies = await Promise.all(Array.from({ length: 8 }, () => post(notary.url, head)));
+    assert.equal(replies.filter((r) => r.status === 200).length, 3, replies.map((r) => r.status).join(","));
+    const limited = replies.filter((r) => r.status === 429);
+    assert.equal(limited.length, 5);
+    for (const r of limited) assert.equal(r.headers.get("retry-after"), "1");
+    assert.equal(readLines(notaryPaths(env.no).log).length, 3);
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    assert.equal((await post(notary.url, head)).status, 200, "the bucket refills");
+    // Each append reads only the last line and the newline before it, not the log.
+    const log = notaryPaths(env.no).log;
+    const names = new Map();
+    let bytes = 0;
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    await withFs({
+      openSync: (real) => (file, ...rest) => { const fd = real(file, ...rest); names.set(fd, String(file)); return fd; },
+      readSync: (real) => (fd, buffer, ...rest) => { const n = real(fd, buffer, ...rest); if (names.get(fd) === log) bytes += n; return n; },
+      readFileSync: (real) => (file, ...rest) => { const out = real(file, ...rest); if (String(file) === log) bytes += out.length; return out; },
+    }, async () => assert.equal((await post(notary.url, head)).status, 200));
+    const lines = readLines(log);
+    assert.equal(lines.length, 5);
+    assert.equal(bytes, Buffer.byteLength(lines[3]) + 2, `read ${bytes} bytes of a ${statSync(log).size}-byte log`);
+    // Another writer changes the log: the tail no longer matches, the whole log is verified, and serving stops.
+    writeFileSync(log, `${lines.slice(0, 4).join("\n")}\n{"tampered":true}\n`);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal((await post(notary.url, head)).status, 500);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    assert.equal((await post(notary.url, head)).status, 500);
+  } finally {
+    await notary.close();
+    await env.cleanup();
+  }
+  // The CLI flag, and a bad value.
+  const home = await tempHome();
+  const { keyId } = keygen(home);
+  const bad = await run(["notary", "serve", "--key", keyId, "--port", "0", "--rate", "0"], { WITNESS_HOME: home });
+  assert.equal(bad.code, 1);
+  assert.match(bad.err, /--rate must be a number of requests per second above 0/);
+  await rm(home, { recursive: true, force: true });
 });
