@@ -383,7 +383,9 @@ test("notary verify: a broken notary log exits 3, and notary serve refuses to st
     assert.match(verifyNotaryLog({ home: env.no }).reason, /missing signer at seq 0/);
     // A blank line is a broken log too, and the intact log verifies again.
     writeFileSync(log, `${lines[0]}\n\n${lines[1]}\n`);
-    assert.equal((await run(["notary", "verify"], { WITNESS_HOME: env.no })).code, 1);
+    const blank = await run(["notary", "verify"], { WITNESS_HOME: env.no });
+    assert.equal(blank.code, 3, blank.out);
+    assert.match(blank.out, /log\.jsonl line 2 is blank/);
     writeFileSync(log, original);
     assert.equal((await run(["notary", "verify", "--key", env.noKey], { WITNESS_HOME: env.no })).code, 0);
     assert.equal((await run(["notary", "verify", "--key", env.opKey], { WITNESS_HOME: env.no })).code, 3);
