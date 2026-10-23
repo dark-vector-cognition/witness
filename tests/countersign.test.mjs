@@ -508,3 +508,55 @@ test("review 8: seq and record counts must be safe integers, and ts a strict ISO
     await env.cleanup();
   }
 });
+
+test("review 6: the exit code follows the order of SPEC-0.4 section 4, not the order of lines in the files", async () => {
+  const env = await setup({ s_aaaa0001: 2, s_bbbb0002: 2 });
+  try {
+    for (const session of ["s_aaaa0001", "s_bbbb0002"]) await countersignSession({ url: env.notary.url, session, keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    const home = await outsider(env, "s_aaaa0001");
+    const key = loadKey(env.opKey, env.op);
+    const [head] = readJson(headsFile("s_aaaa0001", home));
+    const { sig: _sig, ...body } = head;
+    // Line 1: signed, but the wrong hash (exit 3). Line 2: a bad signature (exit 4). Section 4 checks signatures first.
+    const wrongHash = signHead({ ...body, hash: "f".repeat(64) }, key);
+    const badSig = { ...signHead({ ...body, hash: "e".repeat(64) }, key), seq: 0, records: 1 };
+    writeJson(headsFile("s_aaaa0001", home), [wrongHash, badSig]);
+    const heads = checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, home });
+    assert.deepEqual(heads.failures.slice(0, 2).map((f) => f.code), [CHECK_EXIT.headSignature, CHECK_EXIT.head]);
+    assert.equal(heads.code, CHECK_EXIT.headSignature);
+    // Receipts: line 1 names another session's head (exit 6), line 2 has a bad signature (exit 5). Exit 5 comes first.
+    writeJson(headsFile("s_aaaa0001", home), [head]);
+    const [other] = readJson(receiptsFile("s_bbbb0002", env.op));
+    const [own] = readJson(receiptsFile("s_aaaa0001", env.op));
+    const flipped = Buffer.from(own.signer.sig, "base64"); flipped[0] ^= 1;
+    writeJson(receiptsFile("s_aaaa0001", home), [other, { ...own, signer: { ...own.signer, sig: flipped.toString("base64") } }]);
+    const receipts = checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, home });
+    assert.deepEqual(receipts.failures.map((f) => f.code), [CHECK_EXIT.receiptSignature, CHECK_EXIT.receiptHead]);
+    assert.equal(receipts.code, CHECK_EXIT.receiptSignature);
+    await rm(home, { recursive: true, force: true });
+  } finally {
+    await env.cleanup();
+  }
+});
+
+test("review 9: a blank, garbage or non-UTF-8 line in the session log is a broken chain, exit 2", async () => {
+  const env = await setup();
+  try {
+    await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    const home = await outsider(env, "s_aaaa0001");
+    const log = path.join(logDir(home), "s_aaaa0001.jsonl");
+    const original = readFileSync(log);
+    for (const [name, bytes] of [["blank", Buffer.concat([original, Buffer.from("\n")])], ["garbage", Buffer.concat([original, Buffer.from("not json\n")])], ["utf8", Buffer.concat([original, Buffer.from([0xff, 0x0a])])]]) {
+      writeFileSync(log, bytes);
+      const result = await run(["check", "s_aaaa0001", "--notary", env.noKey], { WITNESS_HOME: home });
+      assert.equal(result.code, 2, `${name}: ${result.out}`);
+      assert.match(result.out, /^FAIL chain s_aaaa0001: /m, name);
+    }
+    // A missing log is still exit 1.
+    await rm(log, { force: true });
+    assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, home }).code, CHECK_EXIT.error);
+    await rm(home, { recursive: true, force: true });
+  } finally {
+    await env.cleanup();
+  }
+});

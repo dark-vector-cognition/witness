@@ -74,13 +74,13 @@ The checks, in order:
 6. Every receipt's `head.sha256` is the digest of a head in `heads/<session>.jsonl`, and its `session`, `seq`, `hash` and `key_id` equal that head's.
 7. There is at least one head and at least one receipt.
 
-Every failure is reported on its own line. The exit code is that of the first failure, in the order above.
+Every failure is reported on its own line. The exit code is that of the first failure in the order above: every head's signature check (step 2) runs before any head is matched to the chain (step 3), and every receipt's signature check (step 5) before any receipt is matched to a head (step 6). The order of lines in the files does not change the code.
 
 | Exit | Meaning |
 |---|---|
 | 0 | every check holds |
-| 1 | bad arguments, a missing log file, or a line that does not parse |
-| 2 | the session chain is broken |
+| 1 | bad arguments, a missing log file, a read error, or a line of the heads or receipts file that does not parse |
+| 2 | the session chain is broken, also by a blank, unparseable or non-UTF-8 line |
 | 3 | a head does not match the chain: another hash at its `seq`, its `seq` past the end, or another session |
 | 4 | a head is malformed, its `key_id` does not match its `public_key`, its signature fails, or it is not the `--operator` key |
 | 5 | a receipt is malformed or not signed by the `--notary` key, that key is not trusted, or the receipt's hash or signature fails |
