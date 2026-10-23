@@ -725,3 +725,46 @@ test("review 7: --notary and --operator take the full 64-hex fingerprint; a key_
     await env.cleanup();
   }
 });
+
+test("review 1: a log rewritten and countersigned again passes on the operator's files alone, and exits 8 against the notary log", async () => {
+  const env = await setup({ s_aaaa0001: 3, s_bbbb0002: 2 });
+  try {
+    for (const session of ["s_bbbb0002", "s_aaaa0001"]) await countersignSession({ url: env.notary.url, session, keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    // The operator rewrites the log, removes heads and receipts, and countersigns the rewrite.
+    const log = path.join(logDir(env.op), "s_aaaa0001.jsonl");
+    await rm(log);
+    writeSession(env.op, "s_aaaa0001", 3, 100);
+    await rm(headsFile("s_aaaa0001", env.op));
+    await rm(receiptsFile("s_aaaa0001", env.op));
+    await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: env.noKey, home: env.op });
+    const home = await outsider(env, "s_aaaa0001");
+    const alone = await run(["check", "s_aaaa0001", "--notary", env.noKey], { WITNESS_HOME: home });
+    assert.equal(alone.code, 0, "the operator's files alone cannot show the rewrite");
+    assert.match(alone.out, /\(notary seq 2\)$/m);
+    // The checker gets the notary log from the notary.
+    const copy = path.join(home, "notary-log.jsonl");
+    copyFileSync(notaryPaths(env.no).log, copy);
+    const against = await run(["check", "s_aaaa0001", "--notary", env.noKey, "--notary-log", copy], { WITNESS_HOME: home });
+    assert.equal(against.code, 8, against.out);
+    assert.match(against.out, /^FAIL notary log seq 1 receipted head [0-9a-f]{12} \(seq 2, hash [0-9a-f]{12}\) at .*, which is not in heads\/s_aaaa0001\.jsonl$/m);
+    assert.doesNotMatch(against.out, /notary log seq 0/, "another session's receipts are not this session's");
+    // An honest session passes against the same log.
+    const honest = await outsider(env, "s_bbbb0002");
+    const ok = checkSession({ session: "s_bbbb0002", notaryKeyId: env.noKey, notaryLog: copy, home: honest });
+    assert.equal(ok.code, 0, JSON.stringify(ok.failures));
+    assert.ok(ok.passed.includes("notary log: 3 receipts, 1 for s_bbbb0002, every one names a presented head"));
+    // A presented receipt that the notary log does not hold, a log that does not verify, and a missing file.
+    writeFileSync(copy, readLines(notaryPaths(env.no).log).slice(0, 2).map((l) => `${l}\n`).join(""));
+    const short = checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, notaryLog: copy, home });
+    assert.equal(short.code, CHECK_EXIT.notaryLog);
+    assert.ok(short.failures.some((f) => f.message === "receipt 1 of receipts/s_aaaa0001.jsonl is not in the notary log at seq 2"));
+    writeFileSync(copy, readFileSync(notaryPaths(env.no).log, "utf8").replace('"session":"s_bbbb0002"', '"session":"s_bbbb0003"'));
+    const broken = checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, notaryLog: copy, home });
+    assert.equal(broken.code, CHECK_EXIT.notaryLog);
+    assert.match(broken.failures[0].message, /does not verify under k_[0-9a-f]{8}: hash mismatch at seq 0/);
+    assert.equal(checkSession({ session: "s_aaaa0001", notaryKeyId: env.noKey, notaryLog: path.join(home, "nope.jsonl"), home }).code, CHECK_EXIT.error);
+    for (const dir of [home, honest]) await rm(dir, { recursive: true, force: true });
+  } finally {
+    await env.cleanup();
+  }
+});

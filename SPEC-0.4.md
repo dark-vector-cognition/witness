@@ -73,6 +73,9 @@ The checks, in order:
 5. Every receipt has the fields of section 3, is signed by the `--notary` key, its `hash` recomputes, and its signature is valid.
 6. Every receipt's `head.sha256` is the digest of a head in `heads/<session>.jsonl`, and its `session`, `seq`, `hash` and `key_id` equal that head's.
 7. There is at least one head and at least one receipt.
+8. With `--notary-log <file>`, a copy of the notary's `notary/log.jsonl` that the checker got from the notary: the copy verifies (section 3) under the `--notary` key; every receipt in it whose `head.session` is this session names a head in `heads/<session>.jsonl`; and every receipt in `receipts/<session>.jsonl` is in it at its `seq`, with the same `hash`.
+
+Steps 1 to 7 use only files the operator can hand over. An operator who rewrote a log and sealed and countersigned the rewrite hands over files that pass them (section 6). Step 8 is what shows that rewrite: the notary log still holds the receipt for the original head, and that head is not among the presented heads.
 
 `--notary` and `--operator` each take a fingerprint: 64 lowercase hex characters, sha256 of the key's SPKI DER. `key_id` is its first 8 hex characters. A fingerprint pins one key. A `key_id` is also accepted as a shorthand, but it holds 32 bits, so any key whose fingerprint starts with those 8 hex characters passes; check then prints a NOTE with the full fingerprint to pin. Check prints the fingerprint of every key it used. `witness keygen` prints the fingerprint on stderr, and `notary serve` prints it on start.
 
@@ -88,6 +91,7 @@ Every failure is reported on its own line. The exit code is that of the first fa
 | 5 | a receipt is malformed or not signed by the `--notary` key, that key is not trusted, or the receipt's hash or signature fails |
 | 6 | a receipt names no head in `heads/<session>.jsonl`, or names it with other values |
 | 7 | no head, or no receipt |
+| 8 | with `--notary-log`: the copy does not verify, receipts a head of this session that is not presented, or lacks a presented receipt |
 
 The output names the highest `seq` covered by a valid receipt, and the records after it, which no receipt covers.
 
@@ -139,7 +143,7 @@ witness countersign <url> [<session>|--all] --key <key_id> [--notary <fingerprin
     Append the receipt to receipts/<session>.jsonl. One line per session: SIGNED, SAME or FAIL.
     Exit 0 ok, 1 error (network, status other than 200, key), 3 broken chain, broken file or bad receipt.
 
-witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|key_id>] [--json]
+witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|key_id>] [--notary-log <file>] [--json]
     Section 4. Lines: OK for each check that holds, FAIL for each failure, NOTE for the operator key source and
     for records after the last countersigned head. --json prints one object with code, failures, passed, notes, covered.
 ```
@@ -151,6 +155,6 @@ witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|k
 - **Nothing after the sealed seq.** Records appended after the last countersigned head are covered by no receipt. A tail truncated back to the sealed seq is not detected.
 - **A colluding notary proves nothing.** A notary that shares keys or interests with the operator can issue receipts at any time with any `ts`. The receipt is worth exactly the independence of the notary.
 - **No trusted time.** `ts` is the notary's clock. There is no timestamp authority and no public transparency log. A notary can show different logs to different parties, and a party that holds only its own receipts cannot tell.
-- **No proof that a rewrite did not happen later.** An operator who rewrites a log can seal and countersign the rewrite. The new receipt has a later notary `ts` and `seq`, and the notary log still holds the receipt for the original head. A check against only the rewritten files passes; the rewrite shows only against an earlier receipt or the notary log.
+- **No proof that a rewrite did not happen later.** An operator who rewrites a log can seal and countersign the rewrite. The new receipt has a later notary `ts` and `seq`, and the notary log still holds the receipt for the original head. A check against only the rewritten files passes; the rewrite shows only against an earlier receipt the checker kept, or with `--notary-log` against a copy of the notary log the checker got from the notary.
 - **No operator identity.** `key_id` names a key, not a person or a machine. Without `--operator`, check uses the key the head carries. The principal in session records stays `verified: false`.
 - **No key revocation or rotation.**

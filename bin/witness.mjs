@@ -56,10 +56,11 @@ function usage(code = 0) {
                                 Accept signed heads on POST /receipt and append a signed receipt to notary/log.jsonl. Host rules as feed serve.
                                 --rate caps requests per second for all clients together; more get 429.
   witness notary verify [--key <key_id>]   Walk notary/log.jsonl. Exit 0 intact, 1 read error, 3 broken.
-  witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|key_id>] [--json]
+  witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|key_id>] [--notary-log <file>] [--json]
                                 Offline: chain intact, each head signed and matching the chain, each receipt signed by the notary and naming a head.
                                 Exit 0 ok, 1 error, 2 chain broken, 3 head does not match the chain, 4 bad head signature or key,
-                                5 bad receipt signature or notary key, 6 receipt does not match a head, 7 no head or no receipt.
+                                5 bad receipt signature or notary key, 6 receipt does not match a head, 7 no head or no receipt,
+                                8 the --notary-log copy does not verify, receipts a head not presented, or lacks a presented receipt.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -219,8 +220,8 @@ if (argv[0] === "countersign") {
 }
 
 if (argv[0] === "check") {
-  const [session] = positionals(1, ["--notary", "--operator"]);
-  const result = checkSession({ session, notaryKeyId: opt("--notary"), operatorKeyId: opt("--operator") });
+  const [session] = positionals(1, ["--notary", "--operator", "--notary-log"]);
+  const result = checkSession({ session, notaryKeyId: opt("--notary"), operatorKeyId: opt("--operator"), notaryLog: opt("--notary-log") });
   if (argv.includes("--json")) {
     process.stdout.write(`${JSON.stringify({ session: session ?? null, code: result.code, ok: result.ok, covered: result.covered, failures: result.failures, passed: result.passed, notes: result.notes })}\n`);
   } else {
