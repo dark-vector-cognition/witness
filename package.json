@@ -1,6 +1,6 @@
 {
   "name": "@darkvectorcognition.ai/witness",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Witness — a transparent MCP proxy that writes a tamper-evident, hash-chained record of what your AI agents actually did at the tool boundary. Local-first, zero dependencies.",
   "license": "Apache-2.0",
   "author": "Dark Vector Cognition LLC <hello@darkvectorcognition.ai>",
@@ -50,6 +50,7 @@
     "lib",
     "SPEC.md",
     "SPEC-0.2.md",
+    "SPEC-0.4.md",
     "README.md",
     "LICENSE",
     "CHANGELOG.md"
