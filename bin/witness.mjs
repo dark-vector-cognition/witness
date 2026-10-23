@@ -11,6 +11,7 @@ import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
 import { DEFAULT_HOST, DEFAULT_PORT, feedChainRule, matchFeed, publishFeed, pullFeed, readFeedFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
+import { HeadError, sealSession, sessionIds } from "../lib/heads.mjs";
 import { keygen } from "../lib/keys.mjs";
 import { runProxy } from "../lib/proxy.mjs";
 import { runScore } from "../lib/score.mjs";
@@ -45,6 +46,7 @@ function usage(code = 0) {
                                 --host 0.0.0.0 or :: (every interface) needs --any-interface. An empty --host is refused.
   witness feed pull <url>       Verify a peer's /feed and append it to feed/remote/<key_id>.jsonl. Exit 0 ok, 1 error, 3 bad line.
   witness feed match <sha256>   Exit 0 when an indicator digest is in any feed file, 1 when not, 2 on an error.
+  witness seal [<session>|--all] --key <key_id>   Sign the head of each session chain into heads/<session>.jsonl. Exit 0 ok, 1 error, 3 broken chain.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -156,6 +158,29 @@ if (argv[0] === "keygen") {
     process.stderr.write(`witness keygen: ${error.message}\n`);
     process.exit(1);
   }
+}
+
+/** The positional arguments after argv[from], without the values of the named options. */
+function positionals(from, names) {
+  const values = new Set(names.map((n) => opt(n)).filter(Boolean));
+  return argv.slice(from).filter((a) => !a.startsWith("--") && !values.has(a));
+}
+
+if (argv[0] === "seal") {
+  const [subject] = positionals(1, ["--key"]);
+  const all = argv.includes("--all");
+  if (!subject === !all) { process.stderr.write("witness seal: give one <session> or --all\n"); process.exit(1); }
+  let code = 0;
+  for (const session of all ? sessionIds() : [subject]) {
+    try {
+      const result = sealSession({ session, keyId: opt("--key") });
+      process.stdout.write(`${result.appended ? "SEALED" : "SAME  "} ${session}  seq ${result.head.seq}  ${result.head.hash.slice(0, 12)}  ${result.head.key_id}${result.appended ? "" : " (already sealed)"}\n`);
+    } catch (error) {
+      process.stdout.write(`FAIL   ${session}  ${error.message}\n`);
+      code = Math.max(code, error instanceof HeadError ? error.exitCode : 1);
+    }
+  }
+  process.exit(code);
 }
 
 if (argv[0] === "feed") {
