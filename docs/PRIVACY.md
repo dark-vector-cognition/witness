@@ -1,8 +1,8 @@
 # Privacy and data handling
 
-Witness has no product telemetry, hosted account, cloud database, or background upload. It writes only under `WITNESS_HOME` (default `~/.witness`): the per-session logs in `log/`, a checkpoints file when you run `anchor`, judgment chains in `judge/`, keys in `keys/`, and feed chains in `feed/`.
+Witness has no product telemetry, hosted account, cloud database, or background upload. It writes only under `WITNESS_HOME` (default `~/.witness`): the per-session logs in `log/`, a checkpoints file when you run `anchor`, judgment chains in `judge/`, keys in `keys/`, feed chains in `feed/`, signed heads in `heads/`, receipts in `receipts/`, and, on a notary's home, the notary chain in `notary/`.
 
-Witness is local-only, with two exceptions. Each exception happens only when you run its command.
+Witness is local-only, with three exceptions. Each exception happens only when you run its command.
 
 ## Exception 1: `witness judge` sends session metadata to the model vendor you pick
 
@@ -19,6 +19,14 @@ Witness is local-only, with two exceptions. Each exception happens only when you
 - `origin.host_sha256` is a plain sha256 of the host name. Anyone can recover a host name that is easy to guess from its digest. The same is true for an indicator digest of a short or common value, such as a domain or a tool name.
 - A reason is free text. Read `feed/published.jsonl` before you serve it.
 - `witness feed publish` copies only the fields above into `feed/published.jsonl`. Nothing else from the local feed or from a session goes into it.
+
+## Exception 3: `witness countersign` sends head statements to the notary you name
+
+- It sends one HTTP POST per session that has a new head, to the URL you give, with `user:password@` and any `#fragment` removed. It follows no redirect.
+- What it sends: the head statement. That is the session id, the `seq` and `hash` of the last record, the record count, the seal time, the operator `key_id`, the operator public key, and the signature. No record, tool name, principal or digest of an argument goes out.
+- The notary keeps, per head, the head's digest, session id, `seq`, `hash` and `key_id`, with its own timestamp, in `notary/log.jsonl`. The session id and the times show the notary how many sessions you seal and when.
+- `witness notary serve` accepts heads from every host that can reach the address you bind. The default is `127.0.0.1`. The same `--host` rules as `feed serve` apply.
+- `witness check` sends nothing. It reads local copies only.
 
 `witness feed pull <url>` sends exactly one HTTP GET each time you run it. It sends no record.
 

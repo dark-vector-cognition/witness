@@ -11,7 +11,10 @@ import { anchor, buildReport, queryCalls } from "../lib/analyze.mjs";
 import { startHttpProxy } from "../lib/http-proxy.mjs";
 import { EXIT_CODES, defaultModel, judgeDir, keySigner, runJudge, publicKeyLoader } from "../lib/judge.mjs";
 import { DEFAULT_HOST, DEFAULT_PORT, feedChainRule, matchFeed, publishFeed, pullFeed, readFeedFile, startFeedServer, verifyFeedChain } from "../lib/feed.mjs";
-import { keygen } from "../lib/keys.mjs";
+import { checkSession } from "../lib/check.mjs";
+import { HeadError, sealSession, sessionIds } from "../lib/heads.mjs";
+import { fingerprintOf, keygen } from "../lib/keys.mjs";
+import { DEFAULT_NOTARY_PORT, countersignSession, startNotaryServer, verifyNotaryLog } from "../lib/notary.mjs";
 import { runProxy } from "../lib/proxy.mjs";
 import { runScore } from "../lib/score.mjs";
 import { candidateConfigs, rewriteConfig } from "../lib/wrap.mjs";
@@ -45,6 +48,19 @@ function usage(code = 0) {
                                 --host 0.0.0.0 or :: (every interface) needs --any-interface. An empty --host is refused.
   witness feed pull <url>       Verify a peer's /feed and append it to feed/remote/<key_id>.jsonl. Exit 0 ok, 1 error, 3 bad line.
   witness feed match <sha256>   Exit 0 when an indicator digest is in any feed file, 1 when not, 2 on an error.
+  witness seal [<session>|--all] --key <key_id>   Sign the head of each session chain into heads/<session>.jsonl. Exit 0 ok, 1 error, 3 broken chain.
+  witness countersign <url> [<session>|--all] --key <key_id> [--notary <fingerprint|key_id>]
+                                Seal if needed, send each head to a notary's /receipt, check the receipt, append it to receipts/<session>.jsonl.
+                                Exit 0 ok, 1 error, 3 broken chain or bad receipt.
+  witness notary serve --key <key_id> [--host 127.0.0.1] [--port 7481] [--any-interface] [--rate 10]
+                                Accept signed heads on POST /receipt and append a signed receipt to notary/log.jsonl. Host rules as feed serve.
+                                --rate caps requests per second for all clients together; more get 429.
+  witness notary verify [--key <key_id>]   Walk notary/log.jsonl. Exit 0 intact, 1 read error, 3 broken.
+  witness check <session> --notary <fingerprint|key_id> [--operator <fingerprint|key_id>] [--notary-log <file>] [--json]
+                                Offline: chain intact, each head signed and matching the chain, each receipt signed by the notary and naming a head.
+                                Exit 0 ok, 1 error, 2 chain broken, 3 head does not match the chain, 4 bad head signature or key,
+                                5 bad receipt signature or notary key, 6 receipt does not match a head, 7 no head or no receipt,
+                                8 the --notary-log copy does not verify, receipts a head not presented, or lacks a presented receipt.
 
 Records: ${logDir()}  (override with WITNESS_HOME). Args and results are hashed, not stored.
 `);
@@ -150,10 +166,99 @@ if (argv[0] === "keygen") {
   try {
     const { keyId, keyFile, pubFile } = keygen();
     process.stdout.write(`${keyId}\n`);
-    process.stderr.write(`[witness] wrote ${keyFile} and ${pubFile}. Give peers the .pub file. The .key file never leaves this machine.\n`);
+    process.stderr.write(`[witness] wrote ${keyFile} and ${pubFile}. Give peers the .pub file. The .key file never leaves this machine.\n[witness] fingerprint ${fingerprintOf(readFileSync(pubFile, "utf8"))}. Peers pin the key with it.\n`);
     process.exit(0);
   } catch (error) {
     process.stderr.write(`witness keygen: ${error.message}\n`);
+    process.exit(1);
+  }
+}
+
+/** The positional arguments after argv[from], without the values of the named options. */
+function positionals(from, names) {
+  const values = new Set(names.map((n) => opt(n)).filter(Boolean));
+  return argv.slice(from).filter((a) => !a.startsWith("--") && !values.has(a));
+}
+
+if (argv[0] === "seal") {
+  const [subject] = positionals(1, ["--key"]);
+  const all = argv.includes("--all");
+  if (!subject === !all) { process.stderr.write("witness seal: give one <session> or --all\n"); process.exit(1); }
+  let code = 0;
+  for (const session of all ? sessionIds() : [subject]) {
+    try {
+      const result = sealSession({ session, keyId: opt("--key") });
+      process.stdout.write(`${result.appended ? "SEALED" : "SAME  "} ${session}  seq ${result.head.seq}  ${result.head.hash.slice(0, 12)}  ${result.head.key_id}${result.appended ? "" : " (already sealed)"}\n`);
+    } catch (error) {
+      process.stdout.write(`FAIL   ${session}  ${error.message}\n`);
+      code = Math.max(code, error instanceof HeadError ? error.exitCode : 1);
+    }
+  }
+  process.exit(code);
+}
+
+if (argv[0] === "countersign") {
+  const [url, subject] = positionals(1, ["--key", "--notary"]);
+  const all = argv.includes("--all");
+  if (!url) { process.stderr.write("witness countersign: <url> is required\n"); process.exit(1); }
+  if (!subject === !all) { process.stderr.write("witness countersign: give one <session> or --all\n"); process.exit(1); }
+  let code = 0;
+  let warned = false;
+  for (const session of all ? sessionIds() : [subject]) {
+    try {
+      const result = await countersignSession({ url, session, keyId: opt("--key"), notaryKeyId: opt("--notary") });
+      if (result.notary?.short && !warned) { warned = true; process.stderr.write(`[witness] --notary ${result.notary.keyId} is a 32-bit key_id. Pin the key: --notary ${result.notary.fingerprint}\n`); }
+      const r = result.receipt;
+      if (!result.sent) process.stdout.write(`SAME   ${session}  seq ${result.head.seq}  receipt ${r.signer.key_id} seq ${r.seq} (already countersigned)\n`);
+      else process.stdout.write(`SIGNED ${session}  seq ${result.head.seq}  receipt ${r.signer.key_id} seq ${r.seq} at ${r.ts}${result.verified ? "" : " (unverified: no trusted keys/" + r.signer.key_id + ".pub)"}\n`);
+    } catch (error) {
+      process.stdout.write(`FAIL   ${session}  ${error.message}\n`);
+      code = Math.max(code, error.exitCode ?? 1);
+    }
+  }
+  process.exit(code);
+}
+
+if (argv[0] === "check") {
+  const [session] = positionals(1, ["--notary", "--operator", "--notary-log"]);
+  const result = checkSession({ session, notaryKeyId: opt("--notary"), operatorKeyId: opt("--operator"), notaryLog: opt("--notary-log") });
+  if (argv.includes("--json")) {
+    process.stdout.write(`${JSON.stringify({ session: session ?? null, code: result.code, ok: result.ok, covered: result.covered, failures: result.failures, passed: result.passed, notes: result.notes })}\n`);
+  } else {
+    for (const line of result.passed) process.stdout.write(`OK   ${line}\n`);
+    for (const f of result.failures) process.stdout.write(`FAIL ${f.message}\n`);
+    for (const line of result.notes) process.stdout.write(`NOTE ${line}\n`);
+    process.stdout.write(result.ok ? `${session}: countersigned through seq ${result.covered}\n` : `${session ?? "check"}: ${result.failures.length} failure(s), exit ${result.code}\n`);
+  }
+  process.exit(result.code);
+}
+
+if (argv[0] === "notary") {
+  const sub = argv[1];
+  const fail = (error) => {
+    process.stderr.write(`witness notary ${sub}: ${error.message}\n`);
+    process.exit(error.exitCode ?? 1);
+  };
+  if (sub === "serve") {
+    const host = opt("--host", "127.0.0.1");
+    const port = Number(opt("--port", String(DEFAULT_NOTARY_PORT)));
+    if (!Number.isInteger(port) || port < 0 || port > 65535) fail(new Error("--port must be an integer from 0 to 65535"));
+    try {
+      const rate = Number(opt("--rate", "10"));
+      if (!Number.isFinite(rate) || rate <= 0) throw new Error("--rate must be a number of requests per second above 0");
+      const notary = await startNotaryServer({ keyId: opt("--key"), host, port, anyInterface: argv.includes("--any-interface"), limits: { rate }, onWarn: (message) => process.stderr.write(`[witness] ${message}\n`) });
+      process.stdout.write(`${JSON.stringify({ listen: notary.url, key_id: notary.keyId, fingerprint: notary.fingerprint, log: notary.file })}\n`);
+      process.stderr.write(`[witness] notary ${notary.keyId} accepting heads at ${notary.url}. Ctrl-C to stop.\n`);
+      if (!/^(127\.|::1$)/.test(notary.host)) process.stderr.write(`[witness] ${notary.host} is not a loopback address. Every host that can reach it can ask for receipts.\n`);
+      const stop = async () => { await notary.close(); process.exit(0); };
+      process.on("SIGINT", stop); process.on("SIGTERM", stop);
+    } catch (error) { fail(error); }
+  } else if (sub === "verify") {
+    const result = verifyNotaryLog({ keyId: opt("--key") });
+    process.stdout.write(`${result.ok ? "OK  " : "FAIL"} ${result.file}  ${result.count} receipts${result.keyId ? ` (signed by ${result.keyId})` : ""}${result.ok ? "" : `: ${result.reason}`}\n`);
+    process.exit(result.ok ? 0 : result.readError ? 1 : 3);
+  } else {
+    process.stderr.write("witness notary: serve or verify. See witness --help.\n");
     process.exit(1);
   }
 }
@@ -284,8 +389,8 @@ if (argv[0] === "tail") {
   };
   drain();
   setInterval(drain, 500);
-} else if (argv[0] !== "http" && argv[0] !== "feed") {
-  // proxy mode (http mode and feed serve are long-running and dispatched above)
+} else if (argv[0] !== "http" && argv[0] !== "feed" && argv[0] !== "notary") {
+  // proxy mode (http mode, feed serve and notary serve are long-running and dispatched above)
   let principal = process.env.WITNESS_AS || null;
   let serverName = null;
   let allowKeys = [];
