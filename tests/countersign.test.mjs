@@ -560,3 +560,37 @@ test("review 9: a blank, garbage or non-UTF-8 line in the session log is a broke
     await env.cleanup();
   }
 });
+
+test("review 2: countersign says SAME only for a stored receipt that passes the checks with the requested notary key", async () => {
+  const env = await setup();
+  const other = await tempHome();
+  const otherKey = keygen(other).keyId;
+  const second = await startNotaryServer({ home: other, keyId: otherKey, port: 0 });
+  try {
+    // A receipt from the first notary, stored unverified: this home has no .pub for it.
+    await rm(path.join(env.op, "keys", `${env.noKey}.pub`));
+    const first = await countersignSession({ url: env.notary.url, session: "s_aaaa0001", keyId: env.opKey, home: env.op });
+    assert.equal(first.verified, false);
+    // Asked for the second notary by key: the stored receipt is signed by another key, so the head is sent.
+    trust(other, env.op, otherKey);
+    const asked = await countersignSession({ url: second.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: otherKey, home: env.op });
+    assert.equal(asked.sent, true);
+    assert.equal(asked.receipt.signer.key_id, otherKey);
+    assert.equal((await countersignSession({ url: second.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: otherKey, home: env.op })).sent, false);
+    // A stored receipt whose signature was replaced does not count: the head is sent again.
+    const file = receiptsFile("s_aaaa0001", env.op);
+    const stored = readJson(file);
+    writeJson(file, stored.map((r) => (r.signer.key_id === otherKey ? { ...r, signer: { ...r.signer, sig: Buffer.alloc(64).toString("base64") } } : r)));
+    const again = await countersignSession({ url: second.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: otherKey, home: env.op });
+    assert.equal(again.sent, true);
+    assert.equal(again.verified, true);
+    const then = await countersignSession({ url: second.url, session: "s_aaaa0001", keyId: env.opKey, notaryKeyId: otherKey, home: env.op });
+    assert.equal(then.sent, false);
+    assert.equal(then.verified, true);
+    assert.equal(readLines(notaryPaths(other).log).length, 2);
+  } finally {
+    await second.close();
+    await rm(other, { recursive: true, force: true });
+    await env.cleanup();
+  }
+});

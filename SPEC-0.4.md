@@ -122,8 +122,11 @@ witness notary verify [--key <key_id>]
 witness countersign <url> [<session>|--all] --key <key_id> [--notary <key_id>]
     url is the notary's /receipt endpoint. userinfo and fragment are removed before the request.
     With --notary, keys/<key_id>.pub must be trusted before anything is sent (else exit 1).
-    For each session: seal as above. If the last receipt in receipts/<session>.jsonl names the last head, send
-    nothing (SAME). Otherwise send exactly one POST with the head, follow no redirect, read at most 64 KiB in 30 seconds.
+    For each session: seal as above. If a stored receipt in receipts/<session>.jsonl names the last head and passes
+    every check below that a new receipt must pass, with the --notary key when given, send nothing (SAME). A stored
+    receipt that fails, or is signed by another key than --notary, does not count. Without --notary, any stored receipt
+    that passes counts, so pass --notary to countersign with a second notary.
+    Otherwise send exactly one POST with the head, follow no redirect, read at most 64 KiB in 30 seconds.
     The receipt must have the fields of section 3, name the sent head exactly, and its hash must recompute.
     Its signature is checked when --notary is given, or when keys/ holds a trusted .pub for its signer; a receipt
     that fails is not stored (exit 3). With neither, the receipt is stored and reported as unverified.
