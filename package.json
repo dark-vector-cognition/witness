@@ -41,6 +41,7 @@
     "./keys": "./lib/keys.mjs",
     "./feed": "./lib/feed.mjs",
     "./heads": "./lib/heads.mjs",
+    "./notary": "./lib/notary.mjs",
     "./package.json": "./package.json"
   },
   "files": [
